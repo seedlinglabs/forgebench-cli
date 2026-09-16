@@ -5,6 +5,8 @@ $ErrorActionPreference = "Stop"
 $Repo = "seedlinglabs/forgebench-cli"
 $BinName = "forgebench-session-reviewer"
 $InstallDir = if ($env:FORGEBENCH_INSTALL_DIR) { $env:FORGEBENCH_INSTALL_DIR } else { "$env:LOCALAPPDATA\forgebench-session-reviewer" }
+# stable (default) = latest non-prerelease. preview = latest develop build.
+$Channel = if ($env:FORGEBENCH_CHANNEL) { $env:FORGEBENCH_CHANNEL } else { "stable" }
 
 function Die($msg) {
     Write-Error "error: $msg"
@@ -16,15 +18,28 @@ $asset = "$BinName-windows-$arch.exe"
 
 Write-Host "Detected windows/$arch -> looking for asset '$asset'"
 
-try {
-    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest"
-} catch {
-    Die "could not reach GitHub releases API for $Repo"
+if ($Channel -eq "stable") {
+    try {
+        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest"
+    } catch {
+        Die "could not reach GitHub releases API for $Repo"
+    }
+    $tag = $release.tag_name
+} elseif ($Channel -eq "preview") {
+    try {
+        # /releases/latest ignores prereleases by design, so the newest
+        # preview build has to come from the full list instead (newest-first).
+        $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases"
+    } catch {
+        Die "could not reach GitHub releases API for $Repo"
+    }
+    $tag = ($releases | Where-Object { $_.prerelease } | Select-Object -First 1).tag_name
+} else {
+    Die "unknown FORGEBENCH_CHANNEL '$Channel' (expected 'stable' or 'preview')"
 }
 
-$tag = $release.tag_name
-if (-not $tag) { Die "could not determine the latest release tag" }
-Write-Host "Latest release: $tag"
+if (-not $tag) { Die "could not determine the $Channel release tag" }
+Write-Host "Using $Channel release: $tag"
 
 $downloadUrl = "https://github.com/$Repo/releases/download/$tag/$asset"
 $checksumsUrl = "https://github.com/$Repo/releases/download/$tag/SHA256SUMS"

@@ -6,6 +6,8 @@ set -euo pipefail
 REPO="seedlinglabs/forgebench-cli"
 BIN_NAME="forgebench-session-reviewer"
 INSTALL_DIR="${FORGEBENCH_INSTALL_DIR:-$HOME/.local/bin}"
+# stable (default) = latest non-prerelease. preview = latest develop build.
+CHANNEL="${FORGEBENCH_CHANNEL:-stable}"
 
 log() { printf '%s\n' "$*" >&2; }
 die() { log "error: $*"; exit 1; }
@@ -13,6 +15,7 @@ die() { log "error: $*"; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "'$1' is required but not installed"; }
 need curl
 need uname
+[ "${FORGEBENCH_CHANNEL:-stable}" = "preview" ] && need python3
 
 os="$(uname -s)"
 arch="$(uname -m)"
@@ -29,15 +32,40 @@ case "$arch" in
   *) die "unsupported CPU architecture: $arch" ;;
 esac
 
+# Intel Mac: only an arm64 build is published (see the workflow for why).
+# Rosetta 2 -- present by default on every Intel Mac -- runs it transparently.
+if [ "$platform" = "darwin" ] && [ "$target_arch" = "x64" ]; then
+  log "No Intel Mac build published; using the arm64 build under Rosetta 2 instead."
+  target_arch="arm64"
+fi
+
 asset="${BIN_NAME}-${platform}-${target_arch}"
 log "Detected ${platform}/${target_arch} -> looking for asset '${asset}'"
 
-api_url="https://api.github.com/repos/${REPO}/releases/latest"
-release_json="$(curl -fsSL "$api_url")" || die "could not reach GitHub releases API for ${REPO}"
-
-tag="$(printf '%s' "$release_json" | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
-[ -n "$tag" ] || die "could not determine the latest release tag from ${api_url}"
-log "Latest release: ${tag}"
+case "$CHANNEL" in
+  stable)
+    api_url="https://api.github.com/repos/${REPO}/releases/latest"
+    release_json="$(curl -fsSL "$api_url")" || die "could not reach GitHub releases API for ${REPO}"
+    tag="$(printf '%s' "$release_json" | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
+    ;;
+  preview)
+    # /releases/latest ignores prereleases by design, so the newest preview
+    # build has to come from the full list instead (already newest-first).
+    api_url="https://api.github.com/repos/${REPO}/releases"
+    release_json="$(curl -fsSL "$api_url")" || die "could not reach GitHub releases API for ${REPO}"
+    tag="$(printf '%s' "$release_json" | python3 -c '
+import json, sys
+releases = json.load(sys.stdin)
+preview = next((r["tag_name"] for r in releases if r.get("prerelease")), None)
+print(preview or "")
+')"
+    ;;
+  *)
+    die "unknown FORGEBENCH_CHANNEL '${CHANNEL}' (expected 'stable' or 'preview')"
+    ;;
+esac
+[ -n "$tag" ] || die "could not determine the ${CHANNEL} release tag from ${api_url}"
+log "Using ${CHANNEL} release: ${tag}"
 
 download_url="https://github.com/${REPO}/releases/download/${tag}/${asset}"
 checksums_url="https://github.com/${REPO}/releases/download/${tag}/SHA256SUMS"

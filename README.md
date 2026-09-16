@@ -22,6 +22,17 @@ Both scripts detect your OS/CPU, download the matching binary from this repo's
 [Releases](../../releases), verify its checksum against the published `SHA256SUMS`,
 and install it to a user-writable directory (no admin/sudo required).
 
+By default you get the latest **stable** release. To try the newest **preview**
+build (from `develop`, ahead of the next stable release) instead:
+
+```sh
+FORGEBENCH_CHANNEL=preview curl -fsSL https://raw.githubusercontent.com/seedlinglabs/forgebench-cli/main/install.sh | bash
+```
+
+```powershell
+$env:FORGEBENCH_CHANNEL = "preview"; irm https://raw.githubusercontent.com/seedlinglabs/forgebench-cli/main/install.ps1 | iex
+```
+
 ## Usage
 
 ```sh
@@ -31,11 +42,11 @@ forgebench-session-reviewer run --all --push
 
 ## Supported platforms
 
-| OS      | Architecture                       |
-| ------- | ---------------------------------- |
-| macOS   | Apple Silicon (arm64), Intel (x64) |
-| Linux   | x64                                |
-| Windows | x64                                |
+| OS      | Architecture                                     |
+| ------- | ------------------------------------------------- |
+| macOS   | Apple Silicon (arm64); Intel runs it via Rosetta 2 |
+| Linux   | x64                                               |
+| Windows | x64                                               |
 
 ## Source
 

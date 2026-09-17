@@ -26,7 +26,7 @@ By default you get the latest **stable** release. To try the newest **preview**
 build (from `develop`, ahead of the next stable release) instead:
 
 ```sh
-FORGEBENCH_CHANNEL=preview curl -fsSL https://raw.githubusercontent.com/seedlinglabs/forgebench-cli/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/seedlinglabs/forgebench-cli/main/install.sh | FORGEBENCH_CHANNEL=preview bash
 ```
 
 ```powershell

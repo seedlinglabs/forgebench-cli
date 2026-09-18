@@ -40,6 +40,28 @@ forgebench-session-reviewer login --sso
 forgebench-session-reviewer run --all --push
 ```
 
+Check your version and whether a newer one is available:
+
+```sh
+forgebench-session-reviewer --version
+forgebench-session-reviewer update              # checks the stable channel
+forgebench-session-reviewer update --channel preview
+```
+
+`update` only checks and prints the exact install command to run -- it
+doesn't apply the update itself (a running binary can't safely replace
+itself while executing, especially on Windows).
+
+Check what's actually configured, or remove it entirely:
+
+```sh
+forgebench-session-reviewer status      # version, login state, hooks, schedule
+forgebench-session-reviewer uninstall   # removes schedule, hooks, and stored config/credentials
+```
+
+`uninstall` cleans up everything it can safely touch on its own, then prints
+the command to delete the binary itself (same reasoning as `update`).
+
 ## Supported platforms
 
 | OS      | Architecture                                     |

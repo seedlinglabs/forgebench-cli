@@ -1,10 +1,10 @@
-# Installs forgebench-session-reviewer from this repo's GitHub Releases.
+# Installs forgebench from this repo's GitHub Releases.
 # Usage: irm https://raw.githubusercontent.com/<org>/<repo>/main/install.ps1 | iex
 $ErrorActionPreference = "Stop"
 
 $Repo = "seedlinglabs/forgebench-cli"
-$BinName = "forgebench-session-reviewer"
-$InstallDir = if ($env:FORGEBENCH_INSTALL_DIR) { $env:FORGEBENCH_INSTALL_DIR } else { "$env:LOCALAPPDATA\forgebench-session-reviewer" }
+$BinName = "forgebench"
+$InstallDir = if ($env:FORGEBENCH_INSTALL_DIR) { $env:FORGEBENCH_INSTALL_DIR } else { "$env:LOCALAPPDATA\forgebench" }
 # stable (default) = latest non-prerelease. preview = latest develop build.
 $Channel = if ($env:FORGEBENCH_CHANNEL) { $env:FORGEBENCH_CHANNEL } else { "stable" }
 

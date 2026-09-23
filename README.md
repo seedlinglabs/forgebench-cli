@@ -1,6 +1,6 @@
-# forgebench-session-reviewer
+# forgebench
 
-Installer and release binaries for `forgebench-session-reviewer`, Forgebench's CLI for
+Installer and release binaries for `forgebench`, Forgebench's CLI for
 local, offline analysis of your AI coding sessions. This repo ships only compiled
 binaries (built with Nuitka) and the install scripts below — no application source.
 
@@ -36,16 +36,16 @@ $env:FORGEBENCH_CHANNEL = "preview"; irm https://raw.githubusercontent.com/seedl
 ## Usage
 
 ```sh
-forgebench-session-reviewer login --sso
-forgebench-session-reviewer run --all --push
+forgebench login --sso
+forgebench run --all --push
 ```
 
 Check your version and whether a newer one is available:
 
 ```sh
-forgebench-session-reviewer --version
-forgebench-session-reviewer update              # checks the stable channel
-forgebench-session-reviewer update --channel preview
+forgebench --version
+forgebench update              # checks the stable channel
+forgebench update --channel preview
 ```
 
 `update` only checks and prints the exact install command to run -- it
@@ -55,8 +55,8 @@ itself while executing, especially on Windows).
 Check what's actually configured, or remove it entirely:
 
 ```sh
-forgebench-session-reviewer status      # version, login state, hooks, schedule
-forgebench-session-reviewer uninstall   # removes schedule, hooks, and stored config/credentials
+forgebench status      # version, login state, hooks, schedule
+forgebench uninstall   # removes schedule, hooks, and stored config/credentials
 ```
 
 `uninstall` cleans up everything it can safely touch on its own, then prints

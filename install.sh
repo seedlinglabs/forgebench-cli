@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Installs forgebench-session-reviewer from this repo's GitHub Releases.
+# Installs forgebench from this repo's GitHub Releases.
 # Usage: curl -fsSL https://raw.githubusercontent.com/<org>/<repo>/main/install.sh | bash
 set -euo pipefail
 
 REPO="seedlinglabs/forgebench-cli"
-BIN_NAME="forgebench-session-reviewer"
+BIN_NAME="forgebench"
 INSTALL_DIR="${FORGEBENCH_INSTALL_DIR:-$HOME/.local/bin}"
 # stable (default) = latest non-prerelease. preview = latest develop build.
 CHANNEL="${FORGEBENCH_CHANNEL:-stable}"

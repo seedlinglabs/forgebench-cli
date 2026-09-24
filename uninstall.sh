@@ -25,14 +25,9 @@ printf '\n%s\n' "${BOLD}forgebench${RESET}${DIM} · uninstaller${RESET}" >&2
 # config files, and blindly deleting those would take the user's own hooks
 # with them). Only then remove the binary -- a process cannot reliably delete
 # itself, which is why this is a separate script rather than a subcommand.
-bin_path=""
-if command -v "$BIN_NAME" >/dev/null 2>&1; then
-  bin_path="$(command -v "$BIN_NAME")"
-elif [ -x "$INSTALL_DIR/$BIN_NAME" ]; then
-  bin_path="$INSTALL_DIR/$BIN_NAME"
-fi
+bin_path="$INSTALL_DIR/$BIN_NAME"
 
-if [ -n "$bin_path" ]; then
+if [ -x "$bin_path" ]; then
   info "Removing hooks, schedule and stored credentials..."
   "$bin_path" uninstall || warn "The CLI reported a problem; continuing."
   rm -f "$bin_path" && success "Removed $bin_path"

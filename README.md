@@ -1,8 +1,9 @@
 # forgebench
 
 Installer and release binaries for `forgebench`, Forgebench's CLI for
-local, offline analysis of your AI coding sessions. This repo ships only compiled
-binaries (built with Nuitka) and the install scripts below — no application source.
+local, offline analysis of your AI coding sessions (the Session Reviewer).
+This repo ships only compiled binaries (built with Nuitka) and the install
+scripts below — no application source.
 
 ## Install
 
@@ -36,39 +37,65 @@ $env:FORGEBENCH_CHANNEL = "preview"; irm https://raw.githubusercontent.com/seedl
 ## Usage
 
 ```sh
-forgebench login --sso
-forgebench run --all --push
+# The installer opens guided setup when the installed release supports it.
+forgebench setup
 ```
 
-Check your version and whether a newer one is available:
+Setup signs you in, detects local tools, previews the report and asks before
+enabling automatic sync or uploading. Run `forgebench setup` again to change it.
+Older releases without `setup` print the manual `login` and `run` commands.
 
 ```sh
 forgebench --version
-forgebench update              # checks the stable channel
+forgebench update              # checks stable
 forgebench update --channel preview
+forgebench status              # login, hooks and schedule
+forgebench doctor              # diagnose setup problems
 ```
 
-`update` only checks and prints the exact install command to run -- it
-doesn't apply the update itself (a running binary can't safely replace
-itself while executing, especially on Windows).
+`update` prints the exact install command; it does not replace a running binary.
 
-Check what's actually configured, or remove it entirely:
+### Installer options
 
 ```sh
-forgebench status      # version, login state, hooks, schedule
-forgebench uninstall   # removes schedule, hooks, and stored config/credentials
+curl -fsSL .../install.sh | bash -s -- --help
 ```
 
-`uninstall` cleans up everything it can safely touch on its own, then prints
-the command to delete the binary itself (same reasoning as `update`).
+| Flag | Env | Meaning |
+| --- | --- | --- |
+| `--version <tag>` | `FORGEBENCH_RELEASE_TAG` | install an exact release |
+| `--install-dir <dir>` | `FORGEBENCH_INSTALL_DIR` | where the binary goes |
+| `--no-modify-path` | `FORGEBENCH_NO_MODIFY_PATH` | never edit a shell profile |
+| `--no-setup` | `FORGEBENCH_NO_SETUP` | install only |
+| `--yes` | `FORGEBENCH_YES` | assume yes for prompts |
+
+For a fleet install:
+
+```sh
+curl -fsSL .../install.sh | bash -s -- --yes --no-modify-path --no-setup
+```
+
+Behind a proxy or TLS inspection, set `HTTPS_PROXY` and your corporate CA
+(`SSL_CERT_FILE`, or `FORGEBENCH_CA_BUNDLE` for the CLI).
+
+## Uninstall
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/seedlinglabs/forgebench-cli/main/uninstall.sh | bash
+```
+
+This removes hooks, scheduled runs, stored credentials and config, the binary,
+and the PATH line added by the installer.
 
 ## Supported platforms
 
-| OS      | Architecture                                     |
-| ------- | ------------------------------------------------- |
-| macOS   | Apple Silicon (arm64); Intel runs it via Rosetta 2 |
-| Linux   | x64                                               |
-| Windows | x64                                               |
+| OS | Architecture |
+| --- | --- |
+| macOS | arm64; Intel x64 via Rosetta 2 |
+| Linux | x64 |
+| Windows | x64 |
+
+Only `darwin-arm64`, `linux-x64` and `windows-x64` binaries are published.
 
 ## Source
 

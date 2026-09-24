@@ -17,6 +17,8 @@ $script:UseColor = -not $env:NO_COLOR
 $Repo = "seedlinglabs/forgebench-cli"
 $BinName = "forgebench"
 $InstallDir = if ($env:FORGEBENCH_INSTALL_DIR) { $env:FORGEBENCH_INSTALL_DIR } else { "$env:LOCALAPPDATA\forgebench" }
+# stable (default) = latest non-prerelease. preview = latest develop build.
+$Channel = if ($env:FORGEBENCH_CHANNEL) { $env:FORGEBENCH_CHANNEL } else { "stable" }
 
 function Say($msg, $colour) {
     if ($script:UseColor) { Write-Host $msg -ForegroundColor $colour } else { Write-Host $msg }
@@ -44,16 +46,20 @@ if ($env:FORGEBENCH_RELEASE_TAG) {
     $tag = $env:FORGEBENCH_RELEASE_TAG
     Info "Using requested release: $tag"
 } else {
-    try {
-        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest"
-    } catch {
-        Die "no stable release is published yet for $Repo; set FORGEBENCH_RELEASE_TAG to install a preview"
+    if ($Channel -eq "stable") {
+        try { $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" }
+        catch { Die "could not reach GitHub releases API for $Repo" }
+        $tag = $release.tag_name
+    } elseif ($Channel -eq "preview") {
+        try { $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases" }
+        catch { Die "could not reach GitHub releases API for $Repo" }
+        $tag = ($releases | Where-Object { $_.prerelease } | Select-Object -First 1).tag_name
+    } else {
+        Die "unknown FORGEBENCH_CHANNEL '$Channel' (expected stable or preview)"
     }
-
-    $tag = $release.tag_name
-    if (-not $tag) { Die "could not determine the latest release tag" }
+    if (-not $tag) { Die "could not determine the $Channel release tag" }
+    Info "Using $Channel release: $tag"
 }
-Info "Latest release: $tag"
 
 $downloadUrl = "https://github.com/$Repo/releases/download/$tag/$asset"
 $checksumsUrl = "https://github.com/$Repo/releases/download/$tag/SHA256SUMS"

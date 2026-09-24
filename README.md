@@ -23,6 +23,17 @@ Both scripts detect your OS/CPU, download the matching binary from this repo's
 [Releases](../../releases), verify its checksum against the published `SHA256SUMS`,
 and install it to a user-writable directory (no admin/sudo required).
 
+By default you get the latest **stable** release. To try the newest **preview**
+build (from `develop`, ahead of the next stable release) instead:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/seedlinglabs/forgebench-cli/main/install.sh | FORGEBENCH_CHANNEL=preview bash
+```
+
+```powershell
+$env:FORGEBENCH_CHANNEL = "preview"; irm https://raw.githubusercontent.com/seedlinglabs/forgebench-cli/main/install.ps1 | iex
+```
+
 ## Usage
 
 ```sh
@@ -30,12 +41,18 @@ and install it to a user-writable directory (no admin/sudo required).
 forgebench setup
 ```
 
-Setup signs the developer in, detects supported local tools, previews the exact
-report locally, and asks whether to enable automatic sync and upload. Nothing
-is uploaded until you say so. For an already installed CLI, rerun `setup`.
+Setup signs you in, detects local tools, previews the report and asks before
+enabling automatic sync or uploading. Run `forgebench setup` again to change it.
 
-If something is not working, `forgebench doctor` diagnoses it and prints the
-fix; `forgebench status` shows what is configured.
+```sh
+forgebench --version
+forgebench update              # checks stable
+forgebench update --channel preview
+forgebench status              # login, hooks and schedule
+forgebench doctor              # diagnose setup problems
+```
+
+`update` prints the exact install command; it does not replace a running binary.
 
 ### Installer options
 
@@ -51,16 +68,14 @@ curl -fsSL .../install.sh | bash -s -- --help
 | `--no-setup` | `FORGEBENCH_NO_SETUP` | install only |
 | `--yes` | `FORGEBENCH_YES` | assume yes for prompts |
 
-The fleet entry point is therefore:
+For a fleet install:
 
 ```sh
 curl -fsSL .../install.sh | bash -s -- --yes --no-modify-path --no-setup
 ```
 
-Behind a proxy or a TLS-inspecting middlebox, set `HTTPS_PROXY` and, if your
-org re-signs TLS, `SSL_CERT_FILE` (or `FORGEBENCH_CA_BUNDLE` for the CLI
-itself). The installer reports proxy, DNS and TLS failures distinctly rather
-than as a missing release.
+Behind a proxy or TLS inspection, set `HTTPS_PROXY` and your corporate CA
+(`SSL_CERT_FILE`, or `FORGEBENCH_CA_BUNDLE` for the CLI).
 
 ## Uninstall
 
@@ -68,21 +83,18 @@ than as a missing release.
 curl -fsSL https://raw.githubusercontent.com/seedlinglabs/forgebench-cli/main/uninstall.sh | bash
 ```
 
-This removes the session-end hooks, the scheduled run, stored credentials and
-config, the binary, and the PATH line the installer added.
+This removes hooks, scheduled runs, stored credentials and config, the binary,
+and the PATH line added by the installer.
 
 ## Supported platforms
 
-| OS      | Architecture                                        |
-| ------- | --------------------------------------------------- |
-| macOS   | Apple Silicon (arm64); Intel (x64) via Rosetta 2     |
-| Linux   | x64                                                 |
-| Windows | x64                                                 |
+| OS | Architecture |
+| --- | --- |
+| macOS | arm64; Intel x64 via Rosetta 2 |
+| Linux | x64 |
+| Windows | x64 |
 
 Only `darwin-arm64`, `linux-x64` and `windows-x64` binaries are published.
-On an Intel Mac the installer falls back to the arm64 build, which runs under
-Rosetta 2. There is no `linux-arm64` build yet; the installer says so rather
-than failing on a missing asset.
 
 ## Source
 

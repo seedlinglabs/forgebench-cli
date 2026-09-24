@@ -6,6 +6,8 @@ set -euo pipefail
 REPO="seedlinglabs/forgebench-cli"
 BIN_NAME="forgebench"
 INSTALL_DIR="${FORGEBENCH_INSTALL_DIR:-$HOME/.local/bin}"
+# stable (default) = latest non-prerelease. preview = latest develop build.
+CHANNEL="${FORGEBENCH_CHANNEL:-stable}"
 
 # Every prompt this script can ask has a flag and an env var that pre-answers
 # it, because the fleet entry point is `curl ... | bash -s -- --yes --no-setup`
@@ -66,6 +68,7 @@ die()     { printf '%s\n' "${RED}x${RESET} error: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "'$1' is required but not installed"; }
 need curl
 need uname
+[ "${FORGEBENCH_CHANNEL:-stable}" = "preview" ] && need python3
 
 printf '\n%s\n' "${BOLD}${CYAN}forgebench${RESET}${DIM} · installer${RESET}" >&2
 
@@ -84,57 +87,56 @@ case "$arch" in
   *) die "unsupported CPU architecture: $arch" ;;
 esac
 
-# The release matrix builds darwin-arm64, linux-x64 and windows-x64 only.
-# Advertising Intel Mac support and then 404-ing on darwin-x64 is worse than
-# either building it or saying so: Rosetta 2 runs the arm64 build fine, so
-# fall back to it rather than failing a supported platform.
+# Only darwin-arm64, linux-x64 and windows-x64 are published.
 fallback_arch=""
 if [ "$platform" = "darwin" ] && [ "$target_arch" = "x64" ]; then
   fallback_arch="arm64"
 fi
 if [ "$platform" = "linux" ] && [ "$target_arch" = "arm64" ]; then
-  die "no linux/arm64 build is published yet; build from source (see the README) or use linux/x64"
+  die "no linux/arm64 build is published yet; build from source or use linux/x64"
 fi
 
 asset="${BIN_NAME}-${platform}-${target_arch}"
 legacy_asset="forgebench-session-reviewer-${platform}-${target_arch}"
 info "Detected ${BOLD}${platform}/${target_arch}${RESET}${DIM} -> looking for asset '${asset}'${RESET}"
 
-# A network failure must never be reported as "no release published". Behind a
-# corporate proxy or a TLS-inspecting middlebox that message is not merely
-# unhelpful, it points at an unrelated remedy -- and that is the single most
-# likely first-contact failure in a large org.
 diagnose_curl() {
-  status="$1"; detail="$2"; what="$3"
+  status="$1"; what="$2"
   case "$status" in
-    5)  die "could not resolve the proxy for ${what}. Check HTTPS_PROXY." ;;
-    6)  die "could not resolve host for ${what}. Check DNS or HTTPS_PROXY." ;;
-    7)  die "connection refused for ${what}. Check your network or HTTPS_PROXY." ;;
+    5) die "could not resolve the proxy for ${what}. Check HTTPS_PROXY." ;;
+    6) die "could not resolve host for ${what}. Check DNS or HTTPS_PROXY." ;;
+    7) die "connection refused for ${what}. Check your network or HTTPS_PROXY." ;;
     28) die "timed out fetching ${what}. Check your network or HTTPS_PROXY." ;;
-    35|60|77)
-        die "TLS verification failed for ${what}. If your org inspects TLS, set SSL_CERT_FILE=/path/to/corp-ca.pem" ;;
-    22) return 0 ;;  # a real HTTP 4xx/5xx -- the caller decides what it means
-    *)  die "could not fetch ${what} (curl exit ${status})${detail:+: ${detail}}" ;;
+    35|60|77) die "TLS verification failed for ${what}. Set SSL_CERT_FILE to your corporate CA if needed." ;;
+    *) die "could not fetch ${what} (curl exit ${status})" ;;
   esac
 }
 
-tag="$RELEASE_TAG"
-if [ -n "$tag" ]; then
-  info "Using requested release: ${BOLD}${tag}${RESET}"
+if [ -n "$RELEASE_TAG" ]; then
+  tag="$RELEASE_TAG"
+  info "Using requested release: ${tag}"
 else
-  api_url="https://api.github.com/repos/${REPO}/releases/latest"
+  case "$CHANNEL" in
+    stable) api_url="https://api.github.com/repos/${REPO}/releases/latest" ;;
+    preview) api_url="https://api.github.com/repos/${REPO}/releases" ;;
+    *) die "unknown FORGEBENCH_CHANNEL '${CHANNEL}' (expected stable or preview)" ;;
+  esac
   err_file="$(mktemp)"
-  if ! release_json="$(curl -fsSL "$api_url" 2>"$err_file")"; then
-    rc=$?
-    diagnose_curl "$rc" "$(tr -d '\r' < "$err_file" | tail -1)" "the release list"
+  if release_json="$(curl -fsSL "$api_url" 2>"$err_file")"; then
     rm -f "$err_file"
-    die "no stable release is published yet for ${REPO}; set FORGEBENCH_RELEASE_TAG to install a preview"
+  else
+    rc=$?
+    rm -f "$err_file"
+    diagnose_curl "$rc" "the ${CHANNEL} release list"
   fi
-  rm -f "$err_file"
-  tag="$(printf '%s' "$release_json" | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
-  [ -n "$tag" ] || die "could not determine the latest release tag from ${api_url}"
+  if [ "$CHANNEL" = "preview" ]; then
+    tag="$(printf '%s' "$release_json" | python3 -c 'import json,sys; print(next((r["tag_name"] for r in json.load(sys.stdin) if r.get("prerelease")), ""))')"
+  else
+    tag="$(printf '%s' "$release_json" | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
+  fi
+  [ -n "$tag" ] || die "could not determine the ${CHANNEL} release tag"
+  info "Using ${CHANNEL} release: ${tag}"
 fi
-info "Latest release: ${BOLD}${tag}${RESET}"
 
 download_url="https://github.com/${REPO}/releases/download/${tag}/${asset}"
 checksums_url="https://github.com/${REPO}/releases/download/${tag}/SHA256SUMS"

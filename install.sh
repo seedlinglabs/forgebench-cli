@@ -262,7 +262,7 @@ if ! help_text="$("$INSTALL_DIR/$BIN_NAME" --help 2>&1)"; then
   printf '%s\n' "$help_text" | head -3 >&2
   warn "Run '${BIN_NAME} doctor' once it runs, or reinstall for your platform."
 elif ! printf '%s' "$help_text" | grep -qE '(^|[[:space:]{,])setup([[:space:]},]|$)'; then
-  warn "This release predates guided setup. Install a current release to use '${BIN_NAME} setup'."
+  warn "Release ${tag} has no guided setup. Use '${BIN_NAME} login --sso' then '${BIN_NAME} run --all --push', or install a newer release with setup."
 elif [ "$RUN_SETUP" = "0" ]; then
   info "Install complete (--no-setup). Run '${BIN_NAME} setup' when ready."
 elif [ -r /dev/tty ] && [ -t 2 ]; then

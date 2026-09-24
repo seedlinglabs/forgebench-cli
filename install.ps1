@@ -142,7 +142,7 @@ try {
         Write-Host (($help -split "`n")[0..2] -join "`n")
         Warn "Run '$BinName doctor' once it runs, or reinstall for your platform."
     } elseif ($help -notmatch "(^|[\s\{,])setup([\s\},]|$)") {
-        Warn "This release predates guided setup. Install a current release to use 'forgebench setup'."
+        Warn "Release $tag has no guided setup. Use '$BinName login --sso' then '$BinName run --all --push', or install a newer release with setup."
     } elseif ($env:FORGEBENCH_NO_SETUP) {
         Info "Install complete (FORGEBENCH_NO_SETUP). Run '$BinName setup' when ready."
     } elseif (-not [Environment]::UserInteractive) {

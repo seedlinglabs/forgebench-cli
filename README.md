@@ -37,12 +37,13 @@ $env:FORGEBENCH_CHANNEL = "preview"; irm https://raw.githubusercontent.com/seedl
 ## Usage
 
 ```sh
-# The installer opens guided setup after installation.
+# The installer opens guided setup when the installed release supports it.
 forgebench setup
 ```
 
 Setup signs you in, detects local tools, previews the report and asks before
 enabling automatic sync or uploading. Run `forgebench setup` again to change it.
+Older releases without `setup` print the manual `login` and `run` commands.
 
 ```sh
 forgebench --version

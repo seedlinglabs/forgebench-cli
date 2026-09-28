@@ -124,7 +124,9 @@ Nothing to configure. Install the CLI and run `forgebench setup` as usual.
   the cutover it also compares your local totals with what OTEL delivered and
   fills in only sessions OTEL missed.
 - `forgebench recover-usage --since 3d` re-runs that recovery by hand.
-- `forgebench status` shows whether usage export is on for your tools.
+- To check your export is arriving, use `GET /v1/sessions/usage/telemetry/status`.
+  `forgebench status` only reads `~/.claude/settings.json`, so it shows usage
+  export as off when it comes from your admin's managed settings.
 
 Want to try it before the fleet rollout? Ask an admin for a `telemetry:ingest`
 key and put the same snippet in your own `~/.claude/settings.json` under `env`.

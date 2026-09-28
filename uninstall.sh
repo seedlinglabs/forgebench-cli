@@ -29,7 +29,7 @@ bin_path="$INSTALL_DIR/$BIN_NAME"
 
 if [ -x "$bin_path" ]; then
   info "Removing hooks, schedule and stored credentials..."
-  "$bin_path" uninstall || warn "The CLI reported a problem; continuing."
+  "$bin_path" uninstall || { warn "CLI cleanup failed. Binary retained so you can retry: $bin_path uninstall"; exit 1; }
   rm -f "$bin_path" && success "Removed $bin_path"
 else
   warn "No $BIN_NAME binary found; removing the PATH line only."

@@ -91,11 +91,12 @@ and the PATH line added by the installer.
 
 | OS | Architecture |
 | --- | --- |
-| macOS | arm64; Intel x64 via Rosetta 2 |
+| macOS | Apple Silicon arm64; Intel x64 in releases that include the x64 asset |
 | Linux | x64 |
 | Windows | x64 |
 
-Only `darwin-arm64`, `linux-x64` and `windows-x64` binaries are published.
+Published assets vary by release. The installer selects an exact architecture match
+and reports clearly when an older release lacks that build.
 
 ## Source
 

@@ -87,11 +87,7 @@ case "$arch" in
   *) die "unsupported CPU architecture: $arch" ;;
 esac
 
-# Only darwin-arm64, linux-x64 and windows-x64 are published.
-fallback_arch=""
-if [ "$platform" = "darwin" ] && [ "$target_arch" = "x64" ]; then
-  fallback_arch="arm64"
-fi
+# Older releases may lack an Intel Mac build; asset lookup reports that clearly.
 if [ "$platform" = "linux" ] && [ "$target_arch" = "arm64" ]; then
   die "no linux/arm64 build is published yet; build from source or use linux/x64"
 fi
@@ -144,13 +140,9 @@ checksums_url="https://github.com/${REPO}/releases/download/${tag}/SHA256SUMS"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
-# Candidates in preference order: the current name, the pre-1.2 name (so an
-# older pinned release still installs), and -- on an Intel Mac -- the arm64
-# build under Rosetta. Falling back is normal, not a warning.
+# Candidates in preference order: the current name and the pre-1.2 name,
+# so an older pinned release still installs.
 candidates="$asset $legacy_asset"
-if [ -n "$fallback_arch" ]; then
-  candidates="$candidates ${BIN_NAME}-${platform}-${fallback_arch} forgebench-session-reviewer-${platform}-${fallback_arch}"
-fi
 
 info "Downloading ${asset}..."
 found=""
@@ -159,9 +151,6 @@ for candidate in $candidates; do
   if curl -fL --progress-bar "$url" -o "$tmp_dir/$candidate" 2>/dev/null; then
     found="$candidate"
     [ "$candidate" = "$asset" ] || info "Using asset ${candidate}"
-    case "$candidate" in
-      *"-${fallback_arch}") [ -n "$fallback_arch" ] && info "Running the ${fallback_arch} build under Rosetta 2." ;;
-    esac
     break
   fi
 done

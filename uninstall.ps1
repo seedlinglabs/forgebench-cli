@@ -23,8 +23,8 @@ $destPath = Join-Path $InstallDir "$BinName.exe"
 if (Test-Path $destPath) {
     Info "Removing hooks, schedule and stored credentials..."
     & $destPath uninstall
-    if ($LASTEXITCODE -ne 0) { Warn "The CLI reported a problem; continuing." }
-    Remove-Item -Force $destPath -ErrorAction SilentlyContinue
+    if ($LASTEXITCODE -ne 0) { throw "CLI cleanup failed. Binary retained so you can retry: $destPath uninstall" }
+    Remove-Item -Force $destPath
     Success "Removed $destPath"
 } else {
     Warn "No $BinName.exe found in $InstallDir; removing the PATH entry only."

@@ -15,7 +15,6 @@ CHANNEL="${FORGEBENCH_CHANNEL:-stable}"
 # roll out. Flags win over env so a one-off override is possible.
 ASSUME_YES="${FORGEBENCH_YES:-0}"
 NO_MODIFY_PATH="${FORGEBENCH_NO_MODIFY_PATH:-0}"
-RUN_SETUP="${FORGEBENCH_NO_SETUP:+0}"; RUN_SETUP="${RUN_SETUP:-1}"
 RELEASE_TAG="${FORGEBENCH_RELEASE_TAG:-}"
 
 usage() {
@@ -25,7 +24,7 @@ forgebench installer
   --version <tag>     install a specific release instead of the latest
   --install-dir <dir> where to put the binary (default: ~/.local/bin)
   --no-modify-path    never touch a shell profile
-  --no-setup          install only; do not launch guided setup
+  --no-setup          compatibility flag; install only is now the default
   --yes               assume yes for every prompt
   -h, --help          this message
 
@@ -39,7 +38,7 @@ while [ $# -gt 0 ]; do
     --version) RELEASE_TAG="${2:-}"; shift 2 ;;
     --install-dir) INSTALL_DIR="${2:-}"; shift 2 ;;
     --no-modify-path) NO_MODIFY_PATH=1; shift ;;
-    --no-setup) RUN_SETUP=0; shift ;;
+    --no-setup) shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) printf 'unknown option: %s\n' "$1" >&2; usage; exit 2 ;;
@@ -252,15 +251,6 @@ if ! help_text="$("$INSTALL_DIR/$BIN_NAME" --help 2>&1)"; then
   warn "Run '${BIN_NAME} doctor' once it runs, or reinstall for your platform."
 elif ! printf '%s' "$help_text" | grep -qE '(^|[[:space:]{,])setup([[:space:]},]|$)'; then
   warn "Release ${tag} has no guided setup. Use '${BIN_NAME} login --sso' then '${BIN_NAME} run --all --push', or install a newer release with setup."
-elif [ "$RUN_SETUP" = "0" ]; then
-  info "Install complete (--no-setup). Run '${BIN_NAME} setup' when ready."
-elif [ -r /dev/tty ] && [ -t 2 ]; then
-  info "Starting guided ${BOLD}forgebench${RESET}${DIM} setup...${RESET}"
-  # `|| true`: setup exiting non-zero (nothing selected, not signed in) is a
-  # state the user can resolve later. It must not make a completed install
-  # report failure -- under `set -e` this was the last statement, so a UX
-  # dead-end made the whole `curl | bash` exit non-zero.
-  "$INSTALL_DIR/$BIN_NAME" setup </dev/tty || warn "Setup did not finish. Re-run: ${BIN_NAME} setup"
 else
-  info "Install complete. Run '${BIN_NAME} setup' in an interactive terminal to finish setup."
+  info "Install complete. Run '${BIN_NAME} setup' to choose an environment and sign in."
 fi

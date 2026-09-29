@@ -143,20 +143,8 @@ try {
         Warn "Run '$BinName doctor' once it runs, or reinstall for your platform."
     } elseif ($help -notmatch "(^|[\s\{,])setup([\s\},]|$)") {
         Warn "Release $tag has no guided setup. Use '$BinName login --sso' then '$BinName run --all --push', or install a newer release with setup."
-    } elseif ($env:FORGEBENCH_NO_SETUP) {
-        Info "Install complete (FORGEBENCH_NO_SETUP). Run '$BinName setup' when ready."
-    } elseif (-not [Environment]::UserInteractive) {
-        # install.sh has had this guard all along; without it, an Intune/SCCM
-        # run launched an interactive wizard, got "select at least one --tool",
-        # and left an unconfigured install while reporting success -- native
-        # exit codes do not trip $ErrorActionPreference.
-        Info "Non-interactive session. Run '$BinName setup' to finish, or use '$BinName setup --tool <tool>'."
     } else {
-        Info "Starting guided forgebench setup..."
-        & $destPath setup
-        if ($LASTEXITCODE -ne 0) {
-            Warn "Setup did not finish. Re-run: $BinName setup"
-        }
+        Info "Install complete. Run '$BinName setup' to choose an environment and sign in."
     }
 } finally {
     Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue

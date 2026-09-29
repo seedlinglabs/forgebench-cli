@@ -37,12 +37,13 @@ $env:FORGEBENCH_CHANNEL = "preview"; irm https://raw.githubusercontent.com/seedl
 ## Usage
 
 ```sh
-# The installer opens guided setup when the installed release supports it.
+# Run setup after installation to choose an environment and sign in.
 forgebench setup
 ```
 
-Setup signs you in, detects local tools, previews the report and asks before
+Setup lets you edit the app URL, signs in to that environment, detects local tools, previews the report and asks before
 enabling automatic sync or uploading. Run `forgebench setup` again to change it.
+`forgebench login` and `forgebench logout` also work as separate commands.
 Older releases without `setup` print the manual `login` and `run` commands.
 
 ```sh
@@ -66,7 +67,7 @@ curl -fsSL .../install.sh | bash -s -- --help
 | `--version <tag>` | `FORGEBENCH_RELEASE_TAG` | install an exact release |
 | `--install-dir <dir>` | `FORGEBENCH_INSTALL_DIR` | where the binary goes |
 | `--no-modify-path` | `FORGEBENCH_NO_MODIFY_PATH` | never edit a shell profile |
-| `--no-setup` | `FORGEBENCH_NO_SETUP` | install only |
+| `--no-setup` | `FORGEBENCH_NO_SETUP` | accepted for older scripts; install only is the default |
 | `--yes` | `FORGEBENCH_YES` | assume yes for prompts |
 
 For a fleet install:

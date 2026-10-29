@@ -1,0 +1,33 @@
+{
+  "name": "@forgebench/opencode",
+  "version": "0.1.0-staging.3",
+  "description": "Forgebench plugin for OpenCode 2.x: gateway provider, per-request credentials, session sync and optional MCP.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    "./server": "./server.js",
+    ".": "./server.js"
+  },
+  "files": [
+    "server.js",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test",
+    "smoke": "node scripts/smoke.mjs",
+    "prepublishOnly": "node scripts/release.mjs guard"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/seedlinglabs/forgebench-cli.git",
+    "directory": "packages/forgebench-opencode"
+  }
+}

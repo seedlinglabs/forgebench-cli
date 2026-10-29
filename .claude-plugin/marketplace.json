@@ -1,0 +1,22 @@
+{
+  "name": "forgebench",
+  "owner": {
+    "name": "forgebench",
+    "url": "https://forgebench.ai"
+  },
+  "description": "The forgebench Claude Code plugin marketplace (prod).",
+  "plugins": [
+    {
+      "name": "forgebench",
+      "source": "./plugins/forgebench",
+      "description": "The forgebench Claude Code plugin.",
+      "category": "security",
+      "tags": [
+        "mcp",
+        "agents",
+        "governance",
+        "budgets"
+      ]
+    }
+  ]
+}

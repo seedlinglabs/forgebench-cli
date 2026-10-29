@@ -1,0 +1,108 @@
+# Public publisher for @forgebench/opencode.
+#
+# INSTALL PATH (human, once): this file is the reviewed source of
+#   seedlinglabs/forgebench-cli/.github/workflows/publish-opencode-plugin.yml
+# The source-sync GitHub App has Contents: write only and must NOT be assumed able to change workflow
+# files, so the sync never writes under .github/. An authorised human copies this file into the public
+# repo in a normal reviewed PR (or grants the App the Workflows permission explicitly).
+#
+# The npm trusted publisher (H1 #1061) is bound to exactly: repository seedlinglabs/forgebench-cli,
+# workflow filename publish-opencode-plugin.yml. The publish step authenticates with the repository secret NPM_TOKEN
+# (a granular token with bypass 2FA, write access to @forgebench only) and still publishes with provenance; rotate the
+# secret instead of widening the token.
+#
+# It runs against the mirrored source on main (stable, npm tag latest/next) or on opencode-dev / opencode-staging
+# (VERSION-dev.N / VERSION-staging.N, npm tags dev / staging); `verify-channel` refuses a version on the wrong branch. The `test` job (contents: read only) tests it, scans for
+# secrets, inspects the pack and gates the version; the `publish` job (the only one with the OIDC token permission, behind the
+# `npm-publish` environment: main-only deployment and a required reviewer) publishes with provenance. The first-ever publish is done by a human (H1), not by this workflow.
+name: publish-opencode-plugin
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Exact version to publish; must equal packages/forgebench-opencode/VERSION"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-opencode-plugin
+  cancel-in-progress: false
+
+jobs:
+  test:
+    if: contains(fromJSON('["main","opencode-dev","opencode-staging"]'), github.ref_name) && github.repository == 'seedlinglabs/forgebench-cli'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: packages/forgebench-opencode
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+      - name: VERSION matches the requested version and package.json
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+          PUBLISH_REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          node scripts/release.mjs verify-requested
+          node scripts/release.mjs check
+          node scripts/release.mjs verify-channel
+      - name: Installed workflow matches the reviewed source
+        run: cmp ../../.github/workflows/publish-opencode-plugin.yml publisher/publish-opencode-plugin.yml
+      - name: Test the mirrored source
+        run: npm test
+      - name: Secret scan
+        run: node scripts/release.mjs scan
+      - name: Pack inspection
+        run: node scripts/release.mjs inspect
+      - name: Refuse to republish an existing version
+        run: |
+          set +e
+          node scripts/check-published.mjs
+          code=$?
+          set -e
+          if [ "$code" -eq 0 ]; then echo "already published"; exit 1; fi
+          if [ "$code" -ne 3 ]; then echo "registry state unverifiable"; exit 1; fi
+      - name: Stable version must exceed latest
+        run: node scripts/release.mjs verify-newer
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: packages/forgebench-opencode
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+      - name: Trusted publishing needs npm >= 11.5.1
+        run: npm install --global npm@11.6.2
+      - name: Compute the dist-tag
+        id: tag
+        run: echo "tag=$(node scripts/release.mjs tag)" >> "$GITHUB_OUTPUT"
+      - name: Publish with provenance
+        env:
+          DIST_TAG: ${{ steps.tag.outputs.tag }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance --access public --tag "$DIST_TAG"

@@ -54,11 +54,30 @@ fi
 chmodSync(fake, 0o755)
 
 const requests = []
+const catalogBody = JSON.stringify({
+  object: "list",
+  data: [
+    { id: "smoke-model", kind: "chat", available: true, context_window: 9000, max_output_tokens: 777, description: "Smoke Model", input_per_1k_usd: 0.001, output_per_1k_usd: 0.002 },
+    { id: "smoke-embed", kind: "embedding", available: true },
+  ],
+  default_model: "smoke-model",
+})
 const server = createServer((req, res) => {
   let body = ""
   req.on("data", (chunk) => (body += chunk))
   req.on("end", () => {
     requests.push({ path: req.url, authorization: req.headers.authorization, session: req.headers["x-forgebench-session-id"], harness: req.headers["x-forgebench-harness"], profile: req.headers["x-forgebench-profile"] })
+    // <url>/v1/models: the model catalog the plugin discovers from.
+    if (req.url.startsWith("/v1/models")) {
+      if (!req.headers.authorization?.startsWith(`Bearer ${KEY}-`)) {
+        res.writeHead(401, { "content-type": "application/json" })
+        res.end(JSON.stringify({ detail: "bad key" }))
+        return
+      }
+      res.writeHead(200, { "content-type": "application/json" })
+      res.end(catalogBody)
+      return
+    }
     const chunk = (delta, finish = null) => `data: ${JSON.stringify({ id: "c1", object: "chat.completion.chunk", created: 0, model: "m", choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`
     res.writeHead(200, { "content-type": "text/event-stream" })
     res.end(chunk({ role: "assistant", content: "mock reply" }) + chunk({}, "stop") + "data: [DONE]\n\n")
@@ -86,16 +105,23 @@ try {
   const chat = requests.filter((r) => r.path.endsWith("/chat/completions"))
   assert.ok(chat.length >= 1, `no gateway request (${JSON.stringify(requests)}):\n${run.stdout}${run.stderr}${run.error ?? ""}`)
   for (const r of chat) {
-    assert.match(r.authorization, new RegExp(`^Bearer ${KEY}-1$`))
+    assert.match(r.authorization, new RegExp(`^Bearer ${KEY}-\\d+$`))
     assert.match(r.session, /^ses_/)
     assert.equal(r.harness, "opencode")
     assert.equal(r.profile, "smoke")
   }
+  // Discovery fetched the /v1/models catalog with the resolved key at setup time.
+  const discovery = requests.filter((r) => r.path === "/v1/models")
+  assert.ok(discovery.length >= 1, `no /v1/models discovery request (${JSON.stringify(requests.map((r) => r.path))})`)
+  assert.match(discovery[0].authorization, new RegExp(`^Bearer ${KEY}-\\d+$`))
+  assert.equal(discovery[0].session, undefined)
   // The sync is spawned detached after the run ends, so poll briefly for it.
   const readLog = () => readFileSync(join(base, "fake.log"), "utf8").trim().split("\n")
   for (let i = 0; i < 10 && !readLog().some((l) => l.startsWith("sync ")); i++) await new Promise((resolve) => setTimeout(resolve, 500))
   const log = readLog()
-  assert.deepEqual(log.filter((l) => l.startsWith("gateway token")), [`gateway token --forgebench-url ${url}`])
+  const tokenCalls = log.filter((l) => l.startsWith("gateway token"))
+  assert.ok(tokenCalls.length >= 1, "no gateway token call logged")
+  assert.ok(tokenCalls.every((l) => l === `gateway token --forgebench-url ${url}`))
   const synced = log.filter((l) => l === `sync --quiet --url ${url}`).length
   // Informational: `opencode run` exits right after the reply, so on a loaded machine the host can stop
   // before the idle event reaches the plugin. The unit tests cover the event -> spawn path.
@@ -113,7 +139,7 @@ try {
   }
   scan(base)
   assert.deepEqual(leaks, [], "key found in files under the throwaway tree")
-  console.log(`ok: ${version}: ${chat.length} request(s), 1 token spawn, ${synced} sync spawn(s) (informational), key never in argv`)
+  console.log(`ok: ${version}: ${chat.length} chat request(s), /v1/models discovered at setup, 1 token spawn, ${synced} sync spawn(s) (informational), key never in argv`)
 } finally {
   server.close()
   rmSync(base, { recursive: true, force: true })

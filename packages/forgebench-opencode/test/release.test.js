@@ -328,7 +328,7 @@ test("a staged copy passes npm publish --dry-run", async () => {
   try {
     const port = server.address().port
     const result = await new Promise((resolve, reject) => {
-      const child = spawn("npm", ["publish", "--dry-run", "--ignore-scripts", "--fetch-retries=0", `--registry=http://127.0.0.1:${port}`], { cwd: dest, env: { ...process.env, HOME: tmp() } })
+      const child = spawn("npm", ["publish", "--dry-run", "--ignore-scripts", "--tag", distTag(readVersion(dest)), "--fetch-retries=0", `--registry=http://127.0.0.1:${port}`], { cwd: dest, env: { ...process.env, HOME: tmp() } })
       let err = ""
       child.stderr.on("data", (data) => (err += data))
       child.on("error", reject)

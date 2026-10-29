@@ -10,29 +10,48 @@ scripts below — no application source.
 **macOS / Linux:**
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/seedlinglabs/forgebench-cli/main/install.sh | bash
+curl -fsSL https://forgebench.ai/install.sh | bash
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-irm https://raw.githubusercontent.com/seedlinglabs/forgebench-cli/main/install.ps1 | iex
+irm https://forgebench.ai/install.ps1 | iex
 ```
 
-Both scripts detect your OS/CPU, download the matching binary from this repo's
-[Releases](../../releases), verify its checksum against the published `SHA256SUMS`,
+Both scripts detect your OS/CPU, download the matching binary from Forgebench hosting, verify its checksum against the published `SHA256SUMS`,
 and install it to a user-writable directory (no admin/sudo required).
 
 By default you get the latest **stable** release. To try the newest **preview**
 build (from `develop`, ahead of the next stable release) instead:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/seedlinglabs/forgebench-cli/main/install.sh | FORGEBENCH_CHANNEL=preview bash
+curl -fsSL https://forgebench.ai/install.sh | FORGEBENCH_CHANNEL=preview bash
 ```
 
 ```powershell
-$env:FORGEBENCH_CHANNEL = "preview"; irm https://raw.githubusercontent.com/seedlinglabs/forgebench-cli/main/install.ps1 | iex
+$env:FORGEBENCH_CHANNEL = "preview"; irm https://forgebench.ai/install.ps1 | iex
 ```
+
+## Dev and staging environments
+
+The installer is available on each site's base URL. Dev and staging default to
+verified preview binaries and print the matching API URL for the separate setup
+step. Production defaults to stable. An explicit `FORGEBENCH_CHANNEL` overrides
+the default on any site.
+
+```sh
+curl -fsSL https://dev.forgebench.ai/install.sh | bash
+curl -fsSL https://staging.forgebench.ai/install.sh | bash
+```
+
+The Windows equivalents are `irm https://dev.forgebench.ai/install.ps1 | iex`
+and `irm https://staging.forgebench.ai/install.ps1 | iex`.
+
+Scripts, metadata, checksums and native binaries are all served through the
+selected Forgebench site. `FORGEBENCH_DOWNLOAD_BASE_URL` and
+`FORGEBENCH_SETUP_URL` can explicitly override those defaults. Setup is never
+started automatically by the installer.
 
 ## Usage
 

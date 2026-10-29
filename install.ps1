@@ -1,5 +1,5 @@
-# Installs forgebench from this repo's GitHub Releases.
-# Usage: irm https://raw.githubusercontent.com/<org>/<repo>/main/install.ps1 | iex
+# Installs verified forgebench binaries from Forgebench hosting.
+# Usage: irm https://forgebench.ai/install.ps1 | iex
 $ErrorActionPreference = "Stop"
 
 # Windows PowerShell 5.1 on older builds still negotiates TLS 1.0/1.1 by
@@ -14,7 +14,8 @@ try {
 # the same documented environment variable.
 $script:UseColor = -not $env:NO_COLOR
 
-$Repo = "seedlinglabs/forgebench-cli"
+$DownloadBase = if ($env:FORGEBENCH_DOWNLOAD_BASE_URL) { $env:FORGEBENCH_DOWNLOAD_BASE_URL.TrimEnd("/") } else { "https://forgebench.ai/downloads" }
+$SetupUrl = if ($env:FORGEBENCH_SETUP_URL) { $env:FORGEBENCH_SETUP_URL } else { "https://api.forgebench.ai" }
 $BinName = "forgebench"
 $InstallDir = if ($env:FORGEBENCH_INSTALL_DIR) { $env:FORGEBENCH_INSTALL_DIR } else { "$env:LOCALAPPDATA\forgebench" }
 # stable (default) = latest non-prerelease. preview = latest develop build.
@@ -42,27 +43,25 @@ $legacyAsset = "forgebench-session-reviewer-windows-$arch.exe"
 
 Info "Detected windows/$arch -> looking for asset '$asset'"
 
+if ($Channel -notin @("stable", "preview")) { Die "unknown FORGEBENCH_CHANNEL (expected stable or preview)" }
+if (-not $DownloadBase.StartsWith("https://")) { Die "FORGEBENCH_DOWNLOAD_BASE_URL must use HTTPS" }
 if ($env:FORGEBENCH_RELEASE_TAG) {
-    $tag = $env:FORGEBENCH_RELEASE_TAG
-    Info "Using requested release: $tag"
+    if ($env:FORGEBENCH_RELEASE_TAG -notmatch '^[a-zA-Z0-9][a-zA-Z0-9._-]*$') { Die "invalid release tag" }
+    $metadataUrl = "$DownloadBase/tags/$($env:FORGEBENCH_RELEASE_TAG).json"
 } else {
-    if ($Channel -eq "stable") {
-        try { $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" }
-        catch { Die "could not reach GitHub releases API for $Repo" }
-        $tag = $release.tag_name
-    } elseif ($Channel -eq "preview") {
-        try { $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases" }
-        catch { Die "could not reach GitHub releases API for $Repo" }
-        $tag = ($releases | Where-Object { $_.prerelease } | Select-Object -First 1).tag_name
-    } else {
-        Die "unknown FORGEBENCH_CHANNEL '$Channel' (expected stable or preview)"
-    }
-    if (-not $tag) { Die "could not determine the $Channel release tag" }
-    Info "Using $Channel release: $tag"
+    $metadataUrl = "$DownloadBase/channels/$Channel.json"
 }
-
-$downloadUrl = "https://github.com/$Repo/releases/download/$tag/$asset"
-$checksumsUrl = "https://github.com/$Repo/releases/download/$tag/SHA256SUMS"
+try { $release = Invoke-RestMethod -Uri $metadataUrl }
+catch { Die "could not fetch Forgebench release metadata" }
+$tag = $release.tag_name
+if ($tag -notmatch '^[a-zA-Z0-9][a-zA-Z0-9._-]*$' -or $release.path -notmatch '^releases/[a-zA-Z0-9._-]+/[a-f0-9]{64}$') {
+    Die "invalid release metadata"
+}
+if ($env:FORGEBENCH_RELEASE_TAG -and $tag -ne $env:FORGEBENCH_RELEASE_TAG) { Die "release metadata does not match the requested tag" }
+Info "Using $Channel release: $tag"
+$releaseBase = "$DownloadBase/$($release.path)"
+$downloadUrl = "$releaseBase/$asset"
+$checksumsUrl = "$releaseBase/SHA256SUMS"
 
 $tmpDir = Join-Path $env:TEMP ([System.Guid]::NewGuid().ToString())
 New-Item -ItemType Directory -Path $tmpDir | Out-Null
@@ -76,7 +75,7 @@ try {
     } catch {
         $asset = $legacyAsset
         $assetPath = Join-Path $tmpDir $asset
-        $downloadUrl = "https://github.com/$Repo/releases/download/$tag/$asset"
+        $downloadUrl = "$releaseBase/$asset"
         Info "Trying legacy asset $asset..."
         try {
             Invoke-WebRequest -Uri $downloadUrl -OutFile $assetPath
@@ -144,7 +143,7 @@ try {
     } elseif ($help -notmatch "(^|[\s\{,])setup([\s\},]|$)") {
         Warn "Release $tag has no guided setup. Use '$BinName login --sso' then '$BinName run --all --push', or install a newer release with setup."
     } else {
-        Info "Install complete. Run '$BinName setup' to choose an environment and sign in."
+        Info "Install complete. Run '$BinName setup --url $SetupUrl' to sign in."
     }
 } finally {
     Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue

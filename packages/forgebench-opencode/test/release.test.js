@@ -148,12 +148,19 @@ test("stageSource copies source for the public mirror, without node_modules, and
 })
 
 test("stageSource stamps a dev or staging build into VERSION and package.json of the copy only", () => {
+  // The publisher runs this suite on an already-stamped public mirror too.
+  // Exercise stamping from a stable fixture, independently of that mirror's version.
+  const source = tmp()
+  fs.cpSync(PKG, source, { recursive: true, filter: (p) => !p.includes("node_modules") })
+  const base = "1.2.3"
+  fs.writeFileSync(path.join(source, "VERSION"), base + "\n")
+  const pkg = JSON.parse(fs.readFileSync(path.join(source, "package.json"), "utf8"))
+  fs.writeFileSync(path.join(source, "package.json"), JSON.stringify({ ...pkg, version: base }))
   const dest = path.join(tmp(), "dev")
-  stageSource(PKG, dest, { channel: "dev", build: "12" })
-  const base = fs.readFileSync(path.join(PKG, "VERSION"), "utf8").trim()
+  stageSource(source, dest, { channel: "dev", build: "12" })
   assert.equal(fs.readFileSync(path.join(dest, "VERSION"), "utf8").trim(), `${base}-dev.12`)
   assert.equal(JSON.parse(fs.readFileSync(path.join(dest, "package.json"), "utf8")).version, `${base}-dev.12`)
-  assert.equal(fs.readFileSync(path.join(PKG, "VERSION"), "utf8").trim(), base)
+  assert.equal(fs.readFileSync(path.join(source, "VERSION"), "utf8").trim(), base)
   assert.equal(checkAgreement(dest), `${base}-dev.12`)
   assert.throws(() => stageSource(PKG, path.join(tmp(), "a"), { channel: "prod", build: "1" }), /channel/)
   assert.throws(() => stageSource(PKG, path.join(tmp(), "b"), { channel: "dev", build: "x" }), /build/)

@@ -13,7 +13,7 @@ const REFRESH_EVENT = /^(credential\.(updated|switched)|integration\.updated)$/
 // refresh callback just confirms the (long-lived) credential and stores nothing.
 const OAUTH_EXPIRES_IN_MS = 10 * 365 * 24 * 60 * 60 * 1000
 /** How long setup may block on the first model discovery before falling back to options.models. */
-const FIRST_DISCOVERY_MS = 3000
+const FIRST_DISCOVERY_MS = 15000
 
 /** Each slice registers only when its flag is on; with all flags off this does nothing. */
 export async function setup(ctx, deps = {}) {

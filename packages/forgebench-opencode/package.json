@@ -1,6 +1,6 @@
 {
   "name": "@forgebench/opencode",
-  "version": "0.1.0-dev.3",
+  "version": "0.1.0-dev.4",
   "description": "Forgebench plugin for OpenCode 2.x: gateway provider, per-request credentials, session sync and optional MCP.",
   "license": "Apache-2.0",
   "type": "module",

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Installs forgebench from this repo's GitHub Releases.
-# Usage: curl -fsSL https://raw.githubusercontent.com/<org>/<repo>/main/install.sh | bash
+# Installs verified forgebench binaries from Forgebench hosting.
+# Usage: curl -fsSL https://forgebench.ai/install.sh | bash
 set -euo pipefail
 
-REPO="seedlinglabs/forgebench-cli"
+DOWNLOAD_BASE="${FORGEBENCH_DOWNLOAD_BASE_URL:-https://forgebench.ai/downloads}"
+SETUP_URL="${FORGEBENCH_SETUP_URL:-https://api.forgebench.ai}"
 BIN_NAME="forgebench"
 INSTALL_DIR="${FORGEBENCH_INSTALL_DIR:-$HOME/.local/bin}"
 # stable (default) = latest non-prerelease. preview = latest develop build.
@@ -67,7 +68,8 @@ die()     { printf '%s\n' "${RED}x${RESET} error: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "'$1' is required but not installed"; }
 need curl
 need uname
-[ "${FORGEBENCH_CHANNEL:-stable}" = "preview" ] && need python3
+case "$CHANNEL" in stable|preview) ;; *) die "unknown FORGEBENCH_CHANNEL (expected stable or preview)" ;; esac
+case "$DOWNLOAD_BASE" in https://*) ;; *) die "FORGEBENCH_DOWNLOAD_BASE_URL must use HTTPS" ;; esac
 
 printf '\n%s\n' "${BOLD}${CYAN}forgebench${RESET}${DIM} · installer${RESET}" >&2
 
@@ -108,33 +110,27 @@ diagnose_curl() {
 }
 
 if [ -n "$RELEASE_TAG" ]; then
-  tag="$RELEASE_TAG"
-  info "Using requested release: ${tag}"
+  case "$RELEASE_TAG" in *[!a-zA-Z0-9._-]*|.|..) die "invalid release tag" ;; esac
+  metadata_url="${DOWNLOAD_BASE}/tags/${RELEASE_TAG}.json"
 else
-  case "$CHANNEL" in
-    stable) api_url="https://api.github.com/repos/${REPO}/releases/latest" ;;
-    preview) api_url="https://api.github.com/repos/${REPO}/releases" ;;
-    *) die "unknown FORGEBENCH_CHANNEL '${CHANNEL}' (expected stable or preview)" ;;
-  esac
-  err_file="$(mktemp)"
-  if release_json="$(curl -fsSL "$api_url" 2>"$err_file")"; then
-    rm -f "$err_file"
-  else
-    rc=$?
-    rm -f "$err_file"
-    diagnose_curl "$rc" "the ${CHANNEL} release list"
-  fi
-  if [ "$CHANNEL" = "preview" ]; then
-    tag="$(printf '%s' "$release_json" | python3 -c 'import json,sys; print(next((r["tag_name"] for r in json.load(sys.stdin) if r.get("prerelease")), ""))')"
-  else
-    tag="$(printf '%s' "$release_json" | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
-  fi
-  [ -n "$tag" ] || die "could not determine the ${CHANNEL} release tag"
-  info "Using ${CHANNEL} release: ${tag}"
+  metadata_url="${DOWNLOAD_BASE}/channels/${CHANNEL}.json"
 fi
-
-download_url="https://github.com/${REPO}/releases/download/${tag}/${asset}"
-checksums_url="https://github.com/${REPO}/releases/download/${tag}/SHA256SUMS"
+err_file="$(mktemp)"
+if release_json="$(curl -fsSL "$metadata_url" 2>"$err_file")"; then
+  rm -f "$err_file"
+else
+  rc=$?
+  rm -f "$err_file"
+  diagnose_curl "$rc" "the ${CHANNEL} release metadata"
+fi
+# Publisher emits one JSON key per line; no Python/jq dependency is needed.
+tag="$(printf '%s' "$release_json" | sed -nE 's/^[[:space:]]*"tag_name": "([a-zA-Z0-9._-]+)"[,]?$/\1/p')"
+release_path="$(printf '%s' "$release_json" | sed -nE 's/^[[:space:]]*"path": "(releases\/[a-zA-Z0-9._-]+\/[a-f0-9]{64})"[,]?$/\1/p')"
+[ -n "$tag" ] && [ -n "$release_path" ] || die "invalid release metadata"
+[ -z "$RELEASE_TAG" ] || [ "$tag" = "$RELEASE_TAG" ] || die "release metadata does not match the requested tag"
+info "Using ${CHANNEL} release: ${tag}"
+release_base="${DOWNLOAD_BASE}/${release_path}"
+checksums_url="${release_base}/SHA256SUMS"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -146,7 +142,7 @@ candidates="$asset $legacy_asset"
 info "Downloading ${asset}..."
 found=""
 for candidate in $candidates; do
-  url="https://github.com/${REPO}/releases/download/${tag}/${candidate}"
+  url="${release_base}/${candidate}"
   if curl -fL --progress-bar "$url" -o "$tmp_dir/$candidate" 2>/dev/null; then
     found="$candidate"
     [ "$candidate" = "$asset" ] || info "Using asset ${candidate}"
@@ -155,7 +151,7 @@ for candidate in $candidates; do
 done
 [ -n "$found" ] || die "no build for ${platform}/${target_arch} in release ${tag} (tried: ${candidates})"
 asset="$found"
-download_url="https://github.com/${REPO}/releases/download/${tag}/${asset}"
+download_url="${release_base}/${asset}"
 
 curl -fsSL "$checksums_url" -o "$tmp_dir/SHA256SUMS" \
   || die "could not fetch SHA256SUMS for release ${tag}"
@@ -252,5 +248,5 @@ if ! help_text="$("$INSTALL_DIR/$BIN_NAME" --help 2>&1)"; then
 elif ! printf '%s' "$help_text" | grep -qE '(^|[[:space:]{,])setup([[:space:]},]|$)'; then
   warn "Release ${tag} has no guided setup. Use '${BIN_NAME} login --sso' then '${BIN_NAME} run --all --push', or install a newer release with setup."
 else
-  info "Install complete. Run '${BIN_NAME} setup' to choose an environment and sign in."
+  info "Install complete. Run '${BIN_NAME} setup --url ${SETUP_URL}' to sign in."
 fi

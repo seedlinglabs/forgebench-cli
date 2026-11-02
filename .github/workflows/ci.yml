@@ -2,7 +2,7 @@ name: installer checks
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, develop, staging]
 
 jobs:
   shell:

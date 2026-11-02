@@ -24,6 +24,19 @@ if HOME="$tmp/home" PATH="$tmp/shims:$PATH" bash "$repo_dir/install.sh" --versio
 fi
 grep -q 'no build for darwin/x64' "$tmp/output"
 
+# A dropped connection must name the cause and keep curl's own message.
+cat > "$tmp/shims/curl" <<'SH'
+#!/usr/bin/env bash
+echo 'curl: (56) Recv failure: Connection reset by peer' >&2
+exit 56
+SH
+if HOME="$tmp/home" PATH="$tmp/shims:$PATH" bash "$repo_dir/install.sh" --yes --no-modify-path >"$tmp/output" 2>&1; then
+  echo 'Dropped connection unexpectedly succeeded' >&2
+  exit 1
+fi
+grep -q 'was dropped (curl exit 56)' "$tmp/output"
+grep -q 'Connection reset by peer' "$tmp/output"
+
 cat > "$tmp/fake-forgebench" <<'SH'
 #!/usr/bin/env bash
 case "${1:-}" in

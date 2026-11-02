@@ -98,14 +98,17 @@ legacy_asset="forgebench-session-reviewer-${platform}-${target_arch}"
 info "Detected ${BOLD}${platform}/${target_arch}${RESET}${DIM} -> looking for asset '${asset}'${RESET}"
 
 diagnose_curl() {
-  status="$1"; what="$2"
+  status="$1"; what="$2"; detail="${3:-}"
+  hint=""
+  [ -z "$detail" ] || hint=" (curl said: ${detail})"
   case "$status" in
-    5) die "could not resolve the proxy for ${what}. Check HTTPS_PROXY." ;;
-    6) die "could not resolve host for ${what}. Check DNS or HTTPS_PROXY." ;;
-    7) die "connection refused for ${what}. Check your network or HTTPS_PROXY." ;;
-    28) die "timed out fetching ${what}. Check your network or HTTPS_PROXY." ;;
-    35|60|77) die "TLS verification failed for ${what}. Set SSL_CERT_FILE to your corporate CA if needed." ;;
-    *) die "could not fetch ${what} (curl exit ${status})" ;;
+    5) die "could not resolve the proxy for ${what}. Check HTTPS_PROXY.${hint}" ;;
+    6) die "could not resolve host for ${what}. Check DNS or HTTPS_PROXY.${hint}" ;;
+    7) die "connection refused for ${what}. Check your network or HTTPS_PROXY.${hint}" ;;
+    28) die "timed out fetching ${what}. Check your network or HTTPS_PROXY.${hint}" ;;
+    35|60|77) die "TLS verification failed for ${what}. Set SSL_CERT_FILE to your corporate CA if needed.${hint}" ;;
+    52|55|56) die "the connection for ${what} was dropped (curl exit ${status}). A proxy, VPN or security tool may be resetting it; try another network or ask IT to allow this host.${hint}" ;;
+    *) die "could not fetch ${what} (curl exit ${status})${hint}" ;;
   esac
 }
 
@@ -120,8 +123,9 @@ if release_json="$(curl -fsSL "$metadata_url" 2>"$err_file")"; then
   rm -f "$err_file"
 else
   rc=$?
+  curl_err="$(grep -v '^[[:space:]]*$' "$err_file" 2>/dev/null | tail -n 1 || true)"
   rm -f "$err_file"
-  diagnose_curl "$rc" "the ${CHANNEL} release metadata"
+  diagnose_curl "$rc" "the ${CHANNEL} release metadata" "$curl_err"
 fi
 # Publisher emits one JSON key per line; no Python/jq dependency is needed.
 tag="$(printf '%s' "$release_json" | sed -nE 's/^[[:space:]]*"tag_name": "([a-zA-Z0-9._-]+)"[,]?$/\1/p')"

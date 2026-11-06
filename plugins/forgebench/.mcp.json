@@ -2,7 +2,7 @@
   "mcpServers": {
     "forgebench": {
       "type": "http",
-      "url": "https://api.forgebench.ai/mcp"
+      "url": "https://api.dev.forgebench.ai/mcp"
     }
   }
 }

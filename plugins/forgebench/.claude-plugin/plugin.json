@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "forgebench",
   "displayName": "forgebench",
-  "version": "0.2.2",
+  "version": "0.2.2-dev.6",
   "description": "Onboard a repository's AI agents and MCP servers to forgebench through the hosted forgebench MCP server: scan locally, review the server-side diff, then plan and apply with workspace default budgets. Agent keys are only ever revealed in the browser.",
   "author": {
     "name": "forgebench",
@@ -23,7 +23,7 @@
       "type": "string",
       "title": "Forgebench URL",
       "description": "Base URL of your Forgebench deployment, without a trailing slash. The session sync hooks upload to it.",
-      "default": "https://api.forgebench.ai",
+      "default": "https://api.dev.forgebench.ai",
       "required": false
     },
     "forgebench_cli_path": {
@@ -45,7 +45,7 @@
       "title": "Forgebench MCP URL",
       "description": "Not used by the bundled MCP server, which always connects to https://api.forgebench.ai/mcp. Kept only so existing managed settings that set it stay valid.",
       "required": false,
-      "default": "https://api.forgebench.ai/mcp"
+      "default": "https://api.dev.forgebench.ai/mcp"
     }
   }
 }

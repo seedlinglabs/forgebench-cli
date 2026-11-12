@@ -9,7 +9,7 @@ export async function setup(ctx, deps = {}) {
   const { gateway, sync, mcp } = resolveOptions(ctx.options)
 
   if (gateway) {
-    // No `apiKey`: setting it overrides the `Authorization` set in `model.request`.
+    // No `apiKey`: the key is set per HTTP send in `http.request` below.
     await ctx.provider.transform((editor) => {
       editor.add({
         info: {
@@ -31,10 +31,29 @@ export async function setup(ctx, deps = {}) {
         for (const name of Object.keys(event.headers)) {
           if (name.toLowerCase() === "authorization") delete event.headers[name]
         }
-        // On failure send no Authorization: the gateway answers 401 and the developer re-runs `gateway install`.
-        const token = await getToken().catch(() => undefined)
-        if (token) event.headers.authorization = `Bearer ${token}`
         if (typeof event.sessionID === "string") event.headers[SESSION_HEADER] = event.sessionID
+      },
+      { providerID: PROVIDER_ID },
+    )
+    // The key goes on each physical send, not the prepared request: compaction retries resend
+    // the request `model.request` prepared once, so a key set there would stay stale after a 401.
+    await ctx.session.hook(
+      "http.request",
+      async (event) => {
+        if (event.model?.providerID !== PROVIDER_ID) return
+        event.request.headers.delete("authorization")
+        // Without a last good key, send no Authorization: the gateway answers 401.
+        const token = await getToken().catch(() => undefined)
+        if (token) event.request.headers.set("authorization", `Bearer ${token}`)
+      },
+      { providerID: PROVIDER_ID },
+    )
+    await ctx.session.hook(
+      "retry",
+      async (event) => {
+        if (event.error?.status !== 401 || event.attempt !== 2) return
+        // No fresh key means the retry would only earn a second 401.
+        if (await getToken.refresh().catch(() => undefined)) event.decision = { retry: true, delay: 0 }
       },
       { providerID: PROVIDER_ID },
     )

@@ -33,7 +33,7 @@ async function start(t, { mode = { do: "ok", key: K1 }, valid = [K1] } = {}) {
     await gateway.close()
     await rm(dir, { recursive: true, force: true })
   })
-  return { gateway, cli, reg, expire: () => { clock += TTL }, send: (options) => send(reg, gateway, options) }
+  return { gateway, cli, reg, expire: (milliseconds = TTL) => { clock += milliseconds }, send: (options) => send(reg, gateway, options) }
 }
 
 const ok = (attempts, key) => {
@@ -162,6 +162,9 @@ test("5/f. a refresh that hangs with a grandchild holding stdout keeps the old k
   assert.ok(await until(() => e.cli.alive().length === 0), `the deadline left owned processes running: ${e.cli.alive()}`)
   await e.cli.setMode({ do: "ok", key: K2 })
   assert.equal((await outgoing(e.reg)).authorization, `Bearer ${K1}`)
+  assert.equal(e.cli.spawns(), 2, "a failed background refresh ignored its backoff")
+  e.expire(30_000)
+  assert.equal((await outgoing(e.reg)).authorization, `Bearer ${K1}`)
   assert.ok(await until(() => e.cli.spawns() === 3), "the hung refresh still blocks the next one after the deadline")
   assert.ok(await until(async () => (await outgoing(e.reg)).authorization === `Bearer ${K2}`),
     "the refresh after the deadline never swapped in the new key")
@@ -183,13 +186,15 @@ test("8. a failure with no key fetched before sends no Authorization and the gat
 })
 
 test("10. a recovery after failures replaces the stale key", async (t) => {
+  const logs = captureOutput(t)
   const e = await start(t, { valid: [K1, K2] })
   ok(await e.send(), K1)
   e.expire()
   await e.cli.setMode({ do: "fail", key: K1 })
   ok(await e.send({ retry: false }), K1)
   assert.ok(await until(() => e.cli.ends() >= 2))
-  e.expire()
+  assert.ok(await until(() => logs().includes("failed (3)")))
+  e.expire(30_000)
   await e.cli.setMode({ do: "ok", key: K2 })
   await sendUntilKey(e, K2)
   e.gateway.valid.delete(K1)

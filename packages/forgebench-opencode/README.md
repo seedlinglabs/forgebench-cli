@@ -31,11 +31,13 @@ key only).
   lookup with no key yet waits for the command.
 - The last good key is kept until a refresh succeeds. A failed refresh, a forced refresh after a 401, or a
   refresh that completes after its deadline never clears or overwrites it. A failed refresh does not renew
-  the TTL, so the next send starts another refresh.
+  the TTL. Background retries wait 30 seconds, then double up to five minutes. A successful refresh
+  resets this delay; an explicit refresh after a 401 bypasses it.
 - Failures are logged to stderr once per failure streak, without command output or the key. A successful
   fetch resets the streak.
 
-Each command runs with a 30-second deadline, and the plugin owns every process the command starts. On POSIX
+Each command retains a 30-second deadline, including the first lookup and 401 recovery, to allow cold
+single-file CLI startup. Cached requests do not wait for it. The plugin owns every process the command starts. On POSIX
 the command runs in its own process group. A onefile CLI bootstrap runs the real CLI as its child, so both
 are in that group. At the deadline the plugin sends the group SIGTERM, then SIGKILL 2 seconds later. After
 the command exits, anything it left in the group is killed. On Windows, `taskkill /T /F` ends the tree from

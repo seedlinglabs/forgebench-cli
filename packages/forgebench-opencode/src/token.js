@@ -2,6 +2,8 @@ import { spawn } from "node:child_process"
 
 export const DEFAULT_TTL_MS = 5 * 60 * 1000
 const SPAWN_TIMEOUT_MS = 30 * 1000
+const REFRESH_BACKOFF_MS = 30_000
+const MAX_REFRESH_BACKOFF_MS = 5 * 60_000
 export const KILL_GRACE_MS = 2 * 1000
 const POSIX = process.platform !== "win32"
 
@@ -24,9 +26,13 @@ function runToken(executable, url, { signal }) {
     })
     const chunks = []
     let stdoutBytes = 0
+    let overflowed = false
     child.stdout.on("data", (chunk) => {
+      if (overflowed) return
       stdoutBytes += chunk.length
       if (stdoutBytes > 64 * 1024) {
+        overflowed = true
+        child.stdout.destroy()
         killTree(child.pid, "SIGKILL")
         reject(Object.assign(new Error("gateway token output too large"), { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" }))
         return
@@ -47,7 +53,7 @@ function runToken(executable, url, { signal }) {
     child.on("close", (code, killed) => {
       signal.removeEventListener("abort", abort)
       // A one-shot command: nothing it started may outlive it.
-      if (POSIX && !signal.aborted) killTree(child.pid, "SIGKILL")
+      if (POSIX && !signal.aborted && !overflowed) killTree(child.pid, "SIGKILL")
       if (code === 0) resolve(Buffer.concat(chunks).toString("utf8"))
       else reject(Object.assign(new Error("gateway token failed"), { code: code ?? undefined, signal: killed ?? undefined }))
     })
@@ -57,12 +63,14 @@ function runToken(executable, url, { signal }) {
 /**
  * Gateway key for this deployment (stdout is the key only).
  * Serve cached keys immediately while one shared refresh runs in the background.
- * Failed refreshes leave the TTL unchanged; only startup and explicit refresh wait.
+ * Failed background refreshes back off; only startup and explicit refresh wait.
  */
 export function createTokenSource({ executable, url, ttlMs = DEFAULT_TTL_MS, timeoutMs = SPAWN_TIMEOUT_MS, run = runToken, now = Date.now }) {
   let cached = null
   let inflight = null
   let failing = false
+  let retryAt = 0
+  let retryDelay = REFRESH_BACKOFF_MS
   function refresh() {
     if (inflight) return inflight
     const controller = new AbortController()
@@ -83,6 +91,8 @@ export function createTokenSource({ executable, url, ttlMs = DEFAULT_TTL_MS, tim
         if (!token) throw Object.assign(new Error("printed no key"), { code: "EMPTY_TOKEN" })
         cached = { token, at: now() }
         failing = false
+        retryAt = 0
+        retryDelay = REFRESH_BACKOFF_MS
         return token
       })
       .catch((error) => {
@@ -92,6 +102,8 @@ export function createTokenSource({ executable, url, ttlMs = DEFAULT_TTL_MS, tim
         const failure = new Error(`\`${executable} gateway token\` failed (${reason})`)
         if (!failing) console.error(`[forgebench] ${failure.message}`)
         failing = true
+        retryAt = now() + retryDelay
+        retryDelay = Math.min(retryDelay * 2, MAX_REFRESH_BACKOFF_MS)
         throw failure
       })
       .finally(() => {
@@ -102,7 +114,7 @@ export function createTokenSource({ executable, url, ttlMs = DEFAULT_TTL_MS, tim
   }
   function getToken() {
     if (!cached) return refresh()
-    if (now() - cached.at >= ttlMs) refresh().catch(() => {})
+    if (now() - cached.at >= ttlMs && now() >= retryAt) refresh().catch(() => {})
     return Promise.resolve(cached.token)
   }
   // Keep the last good key: a failed forced refresh must not leave requests keyless.

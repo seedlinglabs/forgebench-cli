@@ -3,6 +3,8 @@
 // pytest suite (tests/test_gateway_token_e2e.py), which sets FORGEBENCH_CLI_PYTHON.
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
+import childProcess from "node:child_process"
+import { syncBuiltinESMExports } from "node:module"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
@@ -23,6 +25,16 @@ test("14. the plugin keeps the last good key when the real CLI's store goes bad"
   skip: PYTHON ? false : "set FORGEBENCH_CLI_PYTHON to a python that can import forgebench_session_reviewer",
 }, async (t) => {
   const logs = captureOutput(t)
+  let closed = 0
+  const spawn = childProcess.spawn
+  // A shell's final log line precedes process close; advance the test clock only after close.
+  t.mock.method(childProcess, "spawn", (...args) => {
+    const child = spawn(...args)
+    child.once("close", () => { closed++ })
+    return child
+  })
+  syncBuiltinESMExports()
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports() })
   const dir = await mkdtemp(join(tmpdir(), "fb242 cli loop "))
   const state = join(dir, "state")
   const spawnLog = join(dir, "spawns.log")
@@ -61,20 +73,21 @@ exit $rc
   sent(await request(), K1)
   assert.equal(await count("start"), 1)
 
-  for (const breakStore of [
+  for (const [index, breakStore] of [
     () => writeFile(join(state, "gateway-keys.json"), "{not json"),
     () => rm(join(state, "gateway-keys.json"), { force: true }),
-  ]) {
-    clock += TTL
+  ].entries()) {
+    clock += index === 0 ? TTL : 30_000
     await breakStore()
-    const spawned = await count("end")
+    const beforeClose = closed
     sent(await request(), K1)
-    assert.ok(await until(() => count("end").then((n) => n > spawned), 15000), "the CLI refresh never finished")
+    assert.ok(await until(() => closed > beforeClose, 15000), "the CLI refresh never finished")
+    await new Promise((resolve) => setImmediate(resolve))
     sent(await request(), K1)
   }
 
   await saveKey(K2)
-  clock += TTL
+  clock += 60_000
   let last
   assert.ok(await until(async () => {
     last = await request()

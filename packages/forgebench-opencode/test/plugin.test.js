@@ -114,7 +114,7 @@ test("expired keys return immediately while one background refresh rotates the k
   assert.equal(spawns, 2)
 })
 
-test("a failed background refresh keeps the key and retries without renewing its ttl", async () => {
+test("a failed background refresh keeps the key and retries after backoff without renewing its ttl", async () => {
   for (const failure of [new Error("command failed"), "  \n"]) {
     let spawns = 0
     let clock = 0
@@ -136,8 +136,12 @@ test("a failed background refresh keeps the key and retries without renewing its
     assert.equal(spawns, 2)
     assert.equal(await getToken(), "k1")
     await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(spawns, 2)
+    clock += 30_000
+    assert.equal(await getToken(), "k1")
+    await new Promise((resolve) => setImmediate(resolve))
     assert.equal(await getToken(), "k3")
-    clock = 199
+    clock += 99
     assert.equal(await getToken(), "k3")
     assert.equal(spawns, 3)
   }

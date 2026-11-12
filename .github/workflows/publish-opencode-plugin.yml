@@ -60,8 +60,6 @@ jobs:
           node scripts/release.mjs verify-channel
       - name: Installed workflow matches the reviewed source
         run: cmp ../../.github/workflows/publish-opencode-plugin.yml publisher/publish-opencode-plugin.yml
-      - name: Install build tools
-        run: npm ci --ignore-scripts
       - name: Test the mirrored source
         run: npm test
       - name: Secret scan
@@ -100,8 +98,6 @@ jobs:
           registry-url: "https://registry.npmjs.org"
       - name: Trusted publishing needs npm >= 11.5.1
         run: npm install --global npm@11.6.2
-      - name: Install build tools
-        run: npm ci --ignore-scripts
       - name: Compute the dist-tag
         id: tag
         run: echo "tag=$(node scripts/release.mjs tag)" >> "$GITHUB_OUTPUT"

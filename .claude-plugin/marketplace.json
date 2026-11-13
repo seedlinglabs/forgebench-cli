@@ -1,10 +1,10 @@
 {
-  "name": "forgebench",
+  "name": "forgebench-dev",
   "owner": {
     "name": "forgebench",
     "url": "https://forgebench.ai"
   },
-  "description": "The forgebench Claude Code plugin marketplace (prod).",
+  "description": "The forgebench Claude Code plugin marketplace (dev).",
   "plugins": [
     {
       "name": "forgebench",

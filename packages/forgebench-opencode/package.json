@@ -1,16 +1,23 @@
 {
   "name": "@forgebench/opencode",
-  "version": "0.1.3",
-  "description": "Forgebench plugin for OpenCode 2.x: gateway provider, per-request credentials, session sync and optional MCP.",
+  "version": "0.2.0-dev.99",
+  "description": "Forgebench plugin for OpenCode 2.x: governed gateway provider, native browser sign-in, model discovery, and direct session, context and trace reporting. No Forgebench CLI required.",
   "license": "Apache-2.0",
   "type": "module",
   "exports": {
-    "./server": "./server.js",
-    ".": "./server.js"
+    ".": {
+      "types": "./dist/server.d.ts",
+      "default": "./server.js"
+    },
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "default": "./server.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "server.js",
-    "src",
+    "dist",
     "README.md",
     "LICENSE"
   ],
@@ -18,8 +25,12 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test",
-    "smoke": "node scripts/smoke.mjs",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test test/*.test.js",
+    "smoke": "npm run build && node scripts/smoke.mjs",
+    "prepack": "npm run build",
     "prepublishOnly": "node scripts/release.mjs guard"
   },
   "publishConfig": {
@@ -29,5 +40,11 @@
     "type": "git",
     "url": "git+https://github.com/seedlinglabs/forgebench-cli.git",
     "directory": "packages/forgebench-opencode"
-  }
+  },
+  "devDependencies": {
+    "@opencode/plugin": "2.2.2",
+    "@types/node": "22.20.0",
+    "typescript": "5.9.3"
+  },
+  "types": "./dist/server.d.ts"
 }

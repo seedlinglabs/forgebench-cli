@@ -1,449 +1,310 @@
 import assert from "node:assert/strict"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
 import { test } from "node:test"
-import { setup } from "../src/plugin.js"
-import { createTokenSource } from "../src/token.js"
-import { createSyncRunner } from "../src/sync.js"
-import { until } from "./support/gateway-e2e.js"
+import { setup } from "../dist/v2/plugin.js"
+import { createCredentialResolver, LEGACY_REFRESH } from "../dist/v2/auth.js"
+import { PROVIDER_ID } from "../dist/v2/options.js"
+import { fakeBackend, fakeConnection, fakeCtx, fakeStorage, installTripwire } from "./helpers.js"
 
 const KEY = "fbk_secret_value"
-const EXE = "/usr/local/bin/forgebench"
-
-// A stand-in for the V2 plugin context: it records what the plugin registers.
-function fakeCtx(options, events = []) {
-  const reg = { provider: [], hooks: [], mcp: [], subscribed: 0, aborted: false }
-  const ctx = {
-    options,
-    provider: { transform: async (cb) => { cb({ add: (input) => reg.provider.push(input) }) } },
-    session: { hook: async (name, cb, opts) => { reg.hooks.push({ name, cb, opts }) } },
-    mcp: { transform: async (cb) => { cb({ set: (name, config) => reg.mcp.push({ name, config }) }) } },
-    event: {
-      subscribe: ({ signal }) => {
-        reg.subscribed += 1
-        signal.addEventListener("abort", () => { reg.aborted = true })
-        return (async function* () { yield* events })()
-      },
-    },
-  }
-  return { ctx, reg }
-}
-
-// OpenCode's flow: `model.request` prepares the headers once, `http.request` sees each physical send.
-async function sendHeaders(reg, event) {
-  for (const hook of reg.hooks.filter((h) => h.name === "model.request")) await hook.cb(event)
-  const request = new Request("http://gw.test/v1/chat/completions", { method: "POST", headers: event.headers })
-  for (const hook of reg.hooks.filter((h) => h.name === "http.request")) {
-    await hook.cb({ model: event.model, sessionID: event.sessionID, request })
-  }
-  return request.headers
-}
-
+// Keeps first-read discovery off the network: setup races a failing fetch instead of DNS.
+const OFFLINE = { models: { fetchImpl: () => Promise.reject(new Error("offline")) }, reporting: { autoRetry: false } }
 const gatewayOptions = {
   gateway: true,
   url: "https://gw.example.com/",
-  executable: EXE,
   models: ["gpt-5", { id: "claude-x", name: "Claude X", context: 1000 }],
   headers: { "X-Forgebench-Profile": "p1", Authorization: "Bearer nope" },
 }
 
-test("provider is registered from options without apiKey", async () => {
-  const { ctx, reg } = fakeCtx({ ...gatewayOptions, apiKey: KEY })
-  await setup(ctx, { token: { run: async () => KEY } })
-  assert.equal(reg.provider.length, 1)
+// Every test in this file runs with a recording `forgebench` first on PATH; the last test asserts silence.
+const tripwire = installTripwire()
+
+const modelRequest = (reg) => reg.hooks.find((hook) => hook.name === "model.request")
+const send = async (reg, event = {}) => {
+  const hook = modelRequest(reg)
+  const input = { model: { providerID: PROVIDER_ID }, headers: {}, sessionID: "ses_1", ...event }
+  await hook.cb(input)
+  return input
+}
+
+test("cleanup waits for an in-flight native session report", async () => {
+  let release
+  let started
+  const began = new Promise((resolve) => { started = resolve })
+  const blocked = new Promise((resolve) => { release = resolve })
+  const backend = fakeBackend({
+    "GET /v1/auth/whoami": { tenant_id: "tenant-1", identity_id: "person-1" },
+    "GET /v1/sessions/capture-policy": { effective: { mode: "legacy", revision: 0 } },
+    "POST /v1/sessions/meta": async () => { started(); await blocked; return { accepted: 1 } },
+  })
+  const url = "https://gw.example.com"
+  const conn = fakeConnection({ type: "oauth", access: KEY, refresh: "reporting", metadata: { url } })
+  const { ctx } = fakeCtx({ url, gateway: false, mcp: false, traces: false }, {
+    connection: conn.connection,
+    events: [{ type: "session.idle", data: { sessionID: "ses_1" } }],
+    sessions: { ses_1: { time: { created: 1_700_000_000_000, idle: 1_700_000_010_000 } } },
+  })
+  const cleanup = await setup(ctx, { reporting: { fetchImpl: backend.fetchImpl, autoRetry: false } })
+  await began
+  let finished = false
+  const closing = cleanup().then(() => { finished = true })
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(finished, false)
+  release()
+  await closing
+  assert.equal(backend.count("/v1/sessions/meta"), 1)
+})
+
+test("provider is registered from options without apiKey in its settings, and the harness header is kept", async () => {
+  const { ctx, reg } = fakeCtx(gatewayOptions)
+  await setup(ctx, OFFLINE)
   const { info, models } = reg.provider[0]
-  assert.equal(info.id, "forgebench")
+  assert.equal(info.id, PROVIDER_ID)
   assert.equal(info.settings.baseURL, "https://gw.example.com/v1")
   assert.ok(!("apiKey" in info.settings))
-  assert.deepEqual(info.headers, { "X-Forgebench-Harness": "opencode", "X-Forgebench-Profile": "p1" })
+  assert.equal(info.headers["X-Forgebench-Harness"], "opencode")
+  assert.equal(info.headers["X-Forgebench-Profile"], "p1")
+  assert.ok(!Object.keys(info.headers).some((name) => name.toLowerCase() === "authorization"))
   assert.deepEqual(models.map((m) => m.id), ["gpt-5", "claude-x"])
-  assert.equal(models[1].limit.context, 1000)
-  assert.ok(!JSON.stringify(reg.provider).includes(KEY))
 })
 
-test("http.request sets Authorization on each send; model.request sets the session header", async () => {
+test("model.request injects Authorization, the session header and a request id; it strips a user Authorization", async () => {
+  const { ctx, reg } = fakeCtx({ ...gatewayOptions, apiKey: KEY })
+  await setup(ctx, OFFLINE)
+  assert.deepEqual(modelRequest(reg).opts, { providerID: PROVIDER_ID })
+  const out = await send(reg, { headers: { Authorization: "Bearer user" } })
+  assert.equal(out.headers.authorization, `Bearer ${KEY}`)
+  assert.equal(out.headers.Authorization, undefined)
+  assert.equal(out.headers["X-Forgebench-Session-Id"], "ses_1")
+  assert.match(out.headers["X-Client-Request-Id"], /^[0-9a-f-]{36}$/)
+  const other = { model: { providerID: "openai" }, headers: {}, sessionID: "ses_1" }
+  await modelRequest(reg).cb(other)
+  assert.deepEqual(other.headers, {})
+})
+
+test("credential precedence: connection, then apiKey, then FORGEBENCH_GATEWAY_KEY; no CLI fallback exists", async () => {
+  const url = "https://gw.example.com"
+  const env = { FORGEBENCH_GATEWAY_KEY: "from-env" }
+  const conn = fakeConnection({ type: "oauth", access: "from-connection", refresh: "r", metadata: { url } })
+  const make = (extra) => createCredentialResolver({ url, env: () => env, ttlMs: 0, ...extra })
+  assert.equal(await make({ integration: { connection: conn.connection }, apiKey: "from-option" })(), "from-connection")
+  assert.equal(await make({ apiKey: "from-option" })(), "from-option")
+  assert.equal(await make({})(), "from-env")
+  // A connection stored for another deployment is never used here.
+  conn.state.credential = { type: "oauth", access: "elsewhere", refresh: "r", metadata: { url: "https://other.example" } }
+  assert.equal(await make({ integration: { connection: conn.connection }, apiKey: "from-option" })(), "from-option")
+  // A pasted key credential resolves from `key`.
+  conn.state.credential = { type: "key", key: "pasted" }
+  assert.equal(await make({ integration: { connection: conn.connection } })(), "pasted")
+  // Lookup failure falls through; nothing spawns anything (tripwire is checked in after()).
+  const broken = { connection: { active: async () => { throw new Error("boom") }, resolve: async () => undefined } }
+  assert.equal(await make({ integration: broken })(), "from-env")
+  assert.equal(await createCredentialResolver({ url, env: () => ({}) })(), undefined)
+})
+
+test("a request without any credential sends no Authorization and keeps the session header", async () => {
   const { ctx, reg } = fakeCtx(gatewayOptions)
-  await setup(ctx, { token: { run: async () => `${KEY}\n` } })
-  for (const name of ["model.request", "http.request"]) {
-    assert.deepEqual(reg.hooks.find((h) => h.name === name).opts, { providerID: "forgebench" })
+  await setup(ctx, OFFLINE)
+  const out = await send(reg)
+  assert.equal(out.headers.authorization, undefined)
+  assert.equal(out.headers["X-Forgebench-Session-Id"], "ses_1")
+})
+
+test("auth auto registers both /connect methods; oauth/key register one; none registers neither", async () => {
+  const methods = async (auth) => {
+    const { ctx, reg } = fakeCtx({ ...gatewayOptions, auth })
+    await setup(ctx, OFFLINE)
+    return reg.methods.map((m) => `${m.integrationID}:${m.method.type}`)
   }
-  const event = { model: { providerID: "forgebench" }, sessionID: "ses_1", headers: {} }
-  const headers = await sendHeaders(reg, event)
-  assert.equal(headers.get("authorization"), `Bearer ${KEY}`)
-  assert.equal(headers.get("x-forgebench-session-id"), "ses_1")
-  assert.ok(!("authorization" in event.headers), "the prepared request must not carry the key")
-  const other = { model: { providerID: "openai" }, sessionID: "ses_1", headers: { Authorization: "Bearer theirs" } }
-  assert.equal((await sendHeaders(reg, other)).get("authorization"), "Bearer theirs")
-  assert.deepEqual(other.headers, { Authorization: "Bearer theirs" })
+  assert.deepEqual(await methods("auto"), ["forgebench:oauth", "forgebench:key"])
+  assert.deepEqual(await methods("oauth"), ["forgebench:oauth"])
+  assert.deepEqual(await methods("key"), ["forgebench:key"])
+  assert.deepEqual(await methods("none"), [])
 })
 
-test("N concurrent token requests spawn the command once", async () => {
-  let spawns = 0
-  let release
-  const gate = new Promise((resolve) => { release = resolve })
-  const getToken = createTokenSource({
-    executable: EXE,
-    run: async (exe) => { spawns += 1; assert.equal(exe, EXE); await gate; return KEY },
-  })
-  const calls = Array.from({ length: 6 }, () => getToken())
-  release()
-  assert.deepEqual(await Promise.all(calls), Array(6).fill(KEY))
-  await getToken()
-  assert.equal(spawns, 1)
-})
-
-test("expired keys return immediately while one background refresh rotates the key", async () => {
-  let spawns = 0
-  let clock = 0
-  let release
-  const gate = new Promise((resolve) => { release = resolve })
-  const getToken = createTokenSource({
-    executable: EXE, ttlMs: 100, now: () => clock,
-    run: async () => { if (++spawns === 2) await gate; return `k${spawns}` },
-  })
-  assert.equal(await getToken(), "k1")
-  clock = 99
-  assert.equal(await getToken(), "k1")
-  clock = 100
-  assert.deepEqual(await Promise.all(Array.from({ length: 6 }, () => getToken())), Array(6).fill("k1"))
-  assert.equal(spawns, 2)
-  release()
-  await new Promise((resolve) => setImmediate(resolve))
-  assert.equal(await getToken(), "k2")
-  assert.equal(spawns, 2)
-})
-
-test("a failed background refresh keeps the key and retries after backoff without renewing its ttl", async () => {
-  for (const failure of [new Error("command failed"), "  \n"]) {
-    let spawns = 0
-    let clock = 0
-    const getToken = createTokenSource({
-      executable: EXE, ttlMs: 100, now: () => clock,
-      run: async () => {
-        spawns += 1
-        if (spawns === 2) {
-          if (failure instanceof Error) throw failure
-          return failure
-        }
-        return `k${spawns}`
-      },
-    })
-    assert.equal(await getToken(), "k1")
-    clock = 100
-    assert.deepEqual(await Promise.all([getToken(), getToken()]), ["k1", "k1"])
-    await new Promise((resolve) => setImmediate(resolve))
-    assert.equal(spawns, 2)
-    assert.equal(await getToken(), "k1")
-    await new Promise((resolve) => setImmediate(resolve))
-    assert.equal(spawns, 2)
-    clock += 30_000
-    assert.equal(await getToken(), "k1")
-    await new Promise((resolve) => setImmediate(resolve))
-    assert.equal(await getToken(), "k3")
-    clock += 99
-    assert.equal(await getToken(), "k3")
-    assert.equal(spawns, 3)
+test("authorize() runs the CLI-free sign-in with an opencode-<install> descriptor and stores two distinct grants", async () => {
+  const seen = []
+  const startSignIn = async (input) => {
+    seen.push(input)
+    return { url: "https://gw.example.com/login", promise: Promise.resolve({ access: "gateway-secret", reportingKey: "reporting-secret", name: "My key", prefix: "sk_x" }) }
   }
+  const storage = fakeStorage({ "device-id": "install-123" })
+  const { ctx, reg } = fakeCtx(gatewayOptions, { storage })
+  await setup(ctx, { ...OFFLINE, oauth: { startSignIn } })
+  const oauth = reg.methods.find((m) => m.method.type === "oauth")
+  const authorization = await oauth.authorize({})
+  assert.equal(seen[0].installId, "install-123")
+  assert.equal(seen[0].url, "https://gw.example.com")
+  assert.equal(authorization.mode, "auto")
+  assert.ok(!authorization.instructions.includes("CLI"))
+  const credential = await authorization.callback
+  assert.equal(credential.access, "gateway-secret")
+  assert.equal(credential.refresh, "reporting-secret")
+  assert.deepEqual(credential.metadata, { url: "https://gw.example.com", name: "My key", prefix: "sk_x" })
+  assert.equal(oauth.label(credential), "ForgeBench · My key")
 })
 
-test("a token failure without a cached key rejects and can recover", async () => {
-  let spawns = 0
-  const failure = new Error("command failed")
-  const getToken = createTokenSource({
-    executable: EXE,
-    run: async () => { if (++spawns === 1) throw failure; return KEY },
-  })
-  await assert.rejects(getToken(), /gateway token.*failed/)
-  assert.equal(await getToken(), KEY)
-  assert.equal(spawns, 2)
+test("authorize() offers sign-in the current model key only from a connection on the same deployment", async () => {
+  const seen = []
+  const startSignIn = async (input) => { seen.push(input); return { url: "u", promise: new Promise(() => {}) } }
+  const conn = fakeConnection({ type: "oauth", access: "current-model-key", refresh: "r", metadata: { url: "https://gw.example.com", name: "Kept", prefix: "sk_k" } })
+  const { ctx, reg } = fakeCtx(gatewayOptions, { connection: conn.connection })
+  await setup(ctx, { ...OFFLINE, oauth: { startSignIn } })
+  await reg.methods.find((m) => m.method.type === "oauth").authorize({})
+  const current = seen[0].currentAccess
+  assert.deepEqual(await current(), { access: "current-model-key", name: "Kept", prefix: "sk_k" })
+  conn.state.credential = { type: "oauth", access: "elsewhere", refresh: "r", metadata: { url: "https://other.example" } }
+  assert.equal(await current(), undefined)
+  conn.state.credential = { type: "key", key: "pasted" }
+  assert.deepEqual(await current(), { access: "pasted" })
+  conn.state.credential = undefined
+  assert.equal(await current(), undefined)
 })
 
-test("the deadline aborts a command that never completes and permits a later fetch", async () => {
-  let signal
-  let spawns = 0
-  const getToken = createTokenSource({
-    executable: EXE, timeoutMs: 20,
-    run: async (_exe, _url, options) => {
-      spawns += 1
-      signal = options.signal
-      assert.equal(options.timeoutMs, 20)
-      if (spawns === 1) return new Promise(() => {})
-      return KEY
-    },
-  })
-  await assert.rejects(getToken(), /timed out after 0\.02s/)
-  assert.equal(signal.aborted, true)
-  assert.equal(await getToken(), KEY)
+test("with reporting disabled the reporting grant is not stored", async () => {
+  const startSignIn = async () => ({ url: "u", promise: Promise.resolve({ access: "g", reportingKey: "r" }) })
+  const { ctx, reg } = fakeCtx({ ...gatewayOptions, sync: false })
+  await setup(ctx, { ...OFFLINE, oauth: { startSignIn } })
+  const credential = await (await reg.methods.find((m) => m.method.type === "oauth").authorize({})).callback
+  assert.equal(credential.refresh, LEGACY_REFRESH)
 })
 
-test("the deadline fires while a bootstrap's child still holds stdout open", async (t) => {
-  const dir = await mkdtemp(join(tmpdir(), "fb token deadline "))
-  const executable = join(dir, "forgebench")
-  const pidFile = join(dir, "child.pid")
-  try {
-    await writeFile(executable, '#!/bin/sh\nsleep 10 &\nprintf "%s" "$!" > "$4"\nwait\n', { mode: 0o755 })
-    t.mock.timers.enable({ apis: ["setTimeout"] })
-    const getToken = createTokenSource({ executable, url: pidFile })
-    const rejected = assert.rejects(getToken(), /timed out after 30s/)
-    assert.ok(await until(async () => Number(await readFile(pidFile, "utf8").catch(() => "")) > 0), "the bootstrap did not start its child")
-    const pid = Number(await readFile(pidFile, "utf8"))
-    assert.ok(pid > 0)
-    t.mock.timers.tick(30_000)
-    await rejected
-    t.mock.timers.reset()
-    // The deadline ends the bootstrap's child too, not just the bootstrap.
-    const gone = () => { try { process.kill(pid, 0); return false } catch (error) { return error.code === "ESRCH" } }
-    for (let i = 0; i < 100 && !gone(); i++) await new Promise((resolve) => setTimeout(resolve, 20))
-    assert.ok(gone(), "the bootstrap's child outlived the deadline")
-  } finally {
-    t.mock.timers.reset()
-    const pid = Number(await readFile(pidFile, "utf8").catch(() => ""))
-    if (pid) {
-      try { process.kill(pid, "SIGKILL") } catch (error) { assert.equal(error.code, "ESRCH") }
-    }
-    await rm(dir, { recursive: true, force: true })
-  }
-})
-
-test("refresh failures log once per streak without exposing error output", async (t) => {
-  const log = t.mock.method(console, "error", () => {})
-  let spawns = 0
-  const getToken = createTokenSource({
-    executable: EXE,
-    run: async () => {
-      if (++spawns === 3) return KEY
-      throw Object.assign(new Error(KEY), { code: 7, stdout: KEY, stderr: KEY })
-    },
-  })
-  await assert.rejects(getToken(), (error) => !error.message.includes(KEY))
-  await assert.rejects(getToken(), (error) => !error.message.includes(KEY))
-  assert.equal(log.mock.calls.length, 1)
-  assert.equal(await getToken(), KEY)
-  await assert.rejects(getToken.refresh(), (error) => !error.message.includes(KEY))
-  assert.equal(log.mock.calls.length, 2)
-  assert.ok(!JSON.stringify(log.mock.calls).includes(KEY))
-})
-
-test("the first 401 forces a key refresh and retries once", async () => {
-  for (const initialFailure of [false, true]) {
-    let spawns = 0
-    let release
-    const gate = new Promise((resolve) => { release = resolve })
-    const { ctx, reg } = fakeCtx(gatewayOptions)
-    await setup(ctx, { token: { run: async () => {
-      spawns += 1
-      if (spawns === 1 && initialFailure) throw new Error("command failed")
-      if (spawns === 2) await gate
-      return `k${spawns}`
-    } } })
-    const retry = reg.hooks.find((h) => h.name === "retry")
-    assert.deepEqual(retry.opts, { providerID: "forgebench" })
-    const first = await sendHeaders(reg, { model: { providerID: "forgebench" }, headers: {} })
-    assert.equal(first.get("authorization"), initialFailure ? null : "Bearer k1")
-    const event = { error: { status: 401 }, attempt: 2 }
-    const pending = retry.cb(event)
-    await new Promise((resolve) => setImmediate(resolve))
-    assert.equal(event.decision, undefined)
-    assert.equal(spawns, 2)
-    release()
-    await pending
-    assert.deepEqual(event.decision, { retry: true, delay: 0 })
-    const next = await sendHeaders(reg, { model: { providerID: "forgebench" }, headers: {} })
-    assert.equal(next.get("authorization"), "Bearer k2")
-    for (const ignored of [{ error: { status: 401 }, attempt: 3 }, { error: { status: 500 }, attempt: 2 }]) {
-      ignored.decision = { retry: false }
-      await retry.cb(ignored)
-      assert.deepEqual(ignored.decision, { retry: false })
-    }
-    assert.equal(spawns, 2)
-  }
-})
-
-test("a failed forced refresh keeps the last good key and does not retry", async () => {
-  let spawns = 0
+test("sign-in failures propagate to the connect UI", async () => {
+  const startSignIn = async () => ({ url: "u", promise: Promise.reject(new Error("declined")) })
   const { ctx, reg } = fakeCtx(gatewayOptions)
-  await setup(ctx, { token: { run: async () => { if (++spawns === 2) throw new Error("command failed"); return `k${spawns}` } } })
-  const retry = reg.hooks.find((h) => h.name === "retry").cb
-  await sendHeaders(reg, { model: { providerID: "forgebench" }, headers: {} })
-  const event = { error: { status: 401 }, attempt: 2, decision: { retry: false } }
-  await retry(event)
-  assert.deepEqual(event.decision, { retry: false })
-  const next = await sendHeaders(reg, { model: { providerID: "forgebench" }, headers: {} })
-  assert.equal(next.get("authorization"), "Bearer k1")
-  assert.equal(spawns, 2)
+  await setup(ctx, { ...OFFLINE, oauth: { startSignIn } })
+  const authorization = await reg.methods.find((m) => m.method.type === "oauth").authorize({})
+  await assert.rejects(authorization.callback, /declined/)
 })
 
-test("token failure sends no Authorization, keeps the session header, and retries next time", async () => {
-  let spawns = 0
-  const run = async () => { spawns += 1; if (spawns === 1) throw new Error("boom"); return KEY }
-  const { ctx, reg } = fakeCtx(gatewayOptions)
-  await setup(ctx, { token: { run } })
-  const first = {
-    model: { providerID: "forgebench" }, sessionID: "ses_1",
-    headers: { Authorization: "Bearer stale-key", authorization: "Bearer another-stale-key" },
-  }
-  const firstSent = await sendHeaders(reg, first)
-  assert.deepEqual(first.headers, { "X-Forgebench-Session-Id": "ses_1" })
-  assert.equal(firstSent.get("authorization"), null)
-  const second = {
-    model: { providerID: "forgebench" }, sessionID: "ses_1",
-    headers: { Authorization: "Bearer stale-key" },
-  }
-  assert.equal((await sendHeaders(reg, second)).get("authorization"), `Bearer ${KEY}`)
-  assert.ok(!("Authorization" in second.headers))
-  assert.equal(spawns, 2)
+const catalog = { data: [{ id: "live-model", kind: "chat", available: true, context_window: 9000, max_output_tokens: 700, description: "Live", input_per_1k_usd: 0.001, output_per_1k_usd: 0.002 }, { id: "embed", kind: "embedding" }] }
+const catalogFetch = (calls = []) => async (url, init) => { calls.push({ url: String(url), init }); return Response.json(catalog) }
+
+test("discovery replaces the fallback models, survives reloads, and uses the resolved key", async () => {
+  const calls = []
+  const { ctx, reg, providers } = fakeCtx({ ...gatewayOptions, apiKey: KEY })
+  await setup(ctx, { ...OFFLINE, models: { fetchImpl: catalogFetch(calls) } })
+  assert.equal(calls[0].url, "https://gw.example.com/v1/models")
+  assert.equal(calls[0].init.headers.Authorization, `Bearer ${KEY}`)
+  assert.deepEqual([...providers.get(PROVIDER_ID).models.keys()], ["live-model"])
+  const model = providers.get(PROVIDER_ID).models.get("live-model")
+  assert.equal(model.limit.context, 9000)
+  assert.equal(model.cost[0].input, 1)
+  assert.ok(reg.reloads >= 1)
 })
 
-test("an empty token is a failure; a failing command's error does not carry output", async () => {
-  const empty = createTokenSource({ executable: EXE, run: async () => "  \n" })
-  await assert.rejects(empty(), /printed no key/)
-  const missing = createTokenSource({ executable: "/nonexistent/forgebench" })
-  await assert.rejects(missing(), (err) => !err.message.includes(KEY) && /gateway token/.test(err.message))
+test("failed or credential-less discovery keeps the fallback list", async () => {
+  const failing = fakeCtx({ ...gatewayOptions, apiKey: KEY })
+  await setup(failing.ctx, OFFLINE)
+  assert.deepEqual([...failing.providers.get(PROVIDER_ID).models.keys()], ["gpt-5", "claude-x"])
+  const calls = []
+  const anonymous = fakeCtx(gatewayOptions)
+  await setup(anonymous.ctx, { ...OFFLINE, models: { fetchImpl: catalogFetch(calls) } })
+  assert.equal(calls.length, 0)
+  assert.deepEqual([...anonymous.providers.get(PROVIDER_ID).models.keys()], ["gpt-5", "claude-x"])
 })
 
-test("token command failures log exit codes and signals without command output", async (t) => {
-  const log = t.mock.method(console, "error", () => {})
-  const dir = await mkdtemp(join(tmpdir(), "fb token failure "))
-  const executable = join(dir, "forgebench")
-  try {
-    for (const [finish, reason] of [["process.exit(7)", "7"], ["process.kill(process.pid, 'SIGTERM')", "SIGTERM"]]) {
-      await writeFile(executable, `#!${process.execPath}
-process.stdout.write(${JSON.stringify(KEY)})
-process.stderr.write(${JSON.stringify(KEY)})
-${finish}
-`, { mode: 0o755 })
-      const getToken = createTokenSource({ executable })
-      await assert.rejects(getToken(), (error) => {
-        assert.ok(error.message.includes(`failed (${reason})`))
-        assert.ok(!error.message.includes(KEY))
-        return true
-      })
-      const message = log.mock.calls.at(-1).arguments.join(" ")
-      assert.ok(message.includes(`failed (${reason})`))
-      assert.ok(!message.includes(KEY))
-    }
-    assert.equal(log.mock.calls.length, 2)
-  } finally {
-    await rm(dir, { recursive: true, force: true })
-  }
+test("a credential event with a working gateway swaps the model list", async () => {
+  const conn = fakeConnection(undefined)
+  const events = [{ type: "credential.updated", data: {} }]
+  const { ctx, providers } = fakeCtx({ ...gatewayOptions }, { events, connection: conn.connection })
+  conn.state.credential = { type: "key", key: KEY }
+  await setup(ctx, { ...OFFLINE, models: { fetchImpl: catalogFetch() } })
+  for (let i = 0; i < 20 && !providers.get(PROVIDER_ID).models.has("live-model"); i++) await new Promise((r) => setTimeout(r, 10))
+  assert.ok(providers.get(PROVIDER_ID).models.has("live-model"))
 })
 
-test("oversized token stdout rejects without replacing the last good key", async (t) => {
-  const log = t.mock.method(console, "error", () => {})
-  const dir = await mkdtemp(join(tmpdir(), "fb token overflow "))
-  const executable = join(dir, "forgebench")
-  const writeCommand = (body) => writeFile(executable, `#!${process.execPath}\n${body}\n`, { mode: 0o755 })
-  try {
-    await writeCommand(`process.stdout.write(${JSON.stringify(KEY)})`)
-    const getToken = createTokenSource({ executable })
-    assert.equal(await getToken(), KEY)
-    for (const body of [
-      'process.stdout.write("x".repeat(64 * 1024), () => process.stdout.end("x".repeat(1024)))',
-      'process.stdout.end("é".repeat(32 * 1024 + 1))',
-    ]) {
-      await writeCommand(body)
-      await assert.rejects(getToken.refresh(), /ERR_CHILD_PROCESS_STDIO_MAXBUFFER/)
-      assert.equal(await getToken(), KEY)
-    }
-    assert.ok(!JSON.stringify(log.mock.calls).includes(KEY))
-  } finally {
-    await rm(dir, { recursive: true, force: true })
-  }
+test("no options enables the hosted gateway, connect methods, MCP and direct reporting, with no executable involved", async () => {
+  const { ctx, reg } = fakeCtx(undefined)
+  const cleanup = await setup(ctx, OFFLINE)
+  assert.equal(reg.provider[0].info.settings.baseURL, "https://api.forgebench.ai/v1")
+  assert.deepEqual(reg.methods.map((m) => m.method.type), ["oauth", "key"])
+  assert.deepEqual(reg.mcp, [{ name: "forgebench", config: { type: "remote", url: "https://api.forgebench.ai/mcp", oauth: { client_id: "forgebench-opencode" } } }])
+  assert.deepEqual(reg.toolHooks.map((h) => h.name), ["execute.before", "execute.after"])
+  assert.equal(reg.subscribed, 1)
+  assert.equal(typeof cleanup, "function")
+  await cleanup()
+  assert.equal(reg.aborted, true)
 })
 
-test("token lookup selects the configured deployment instead of the CLI default", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "fb token test "))
-  const executable = join(dir, "forgebench")
-  const log = join(dir, "argv.json")
-  const url = "https://staging.example.test"
-  try {
-    await writeFile(executable, `#!${process.execPath}
-const { writeFileSync } = require("node:fs")
-const args = process.argv.slice(2)
-writeFileSync(${JSON.stringify(log)}, JSON.stringify(args))
-process.stdout.write(args[2] === "--forgebench-url" && args[3] === ${JSON.stringify(url)} ? "staging-key" : "production-key")
-`, { mode: 0o755 })
-    const { ctx, reg } = fakeCtx({ ...gatewayOptions, url: url + "/", executable })
-    await setup(ctx)
-    const headers = await sendHeaders(reg, { model: { providerID: "forgebench" }, headers: {} })
-    assert.equal(headers.get("authorization"), "Bearer staging-key")
-    assert.deepEqual(JSON.parse(await readFile(log, "utf8")), ["gateway", "token", "--forgebench-url", url])
-  } finally {
-    await rm(dir, { recursive: true, force: true })
-  }
-})
-
-test("all flags off registers nothing", async () => {
-  const off = [
-    undefined,
-    {},
-    { url: "https://gw", executable: EXE, models: ["m"] },
-    { gateway: "yes", sync: 1, mcp: "true", url: "https://gw", executable: EXE },
-  ]
-  for (const options of off) {
+test("explicit false flags and invalid flag types register nothing; sync:false is the reporting opt-out alias", async () => {
+  for (const options of [{ gateway: false, sync: false, mcp: false }, { gateway: "false", sync: 0, mcp: null }, { gateway: false, reporting: false, mcp: false }]) {
     const { ctx, reg } = fakeCtx(options)
-    const cleanup = await setup(ctx)
-    assert.deepEqual(reg.provider, [])
-    assert.deepEqual(reg.hooks, [])
-    assert.deepEqual(reg.mcp, [])
-    assert.equal(reg.subscribed, 0)
-    assert.equal(cleanup, undefined)
+    assert.equal(await setup(ctx, OFFLINE), undefined)
+    assert.deepEqual([reg.provider.length, reg.hooks.length, reg.methods.length, reg.mcp.length, reg.subscribed, reg.toolHooks.length], [0, 0, 0, 0, 0, 0])
   }
+  const reportingOff = fakeCtx({ sync: false })
+  await setup(reportingOff.ctx, OFFLINE)
+  assert.equal(reportingOff.reg.toolHooks.length, 0)
+  assert.equal(reportingOff.reg.provider.length, 1)
+  const onlyMcp = fakeCtx({ gateway: false, sync: false })
+  await setup(onlyMcp.ctx, OFFLINE)
+  assert.equal(onlyMcp.reg.mcp.length, 1)
+  assert.equal(onlyMcp.reg.provider.length, 0)
 })
 
-test("each flag enables only its slice", async () => {
-  const base = { url: "https://gw.example.com", executable: EXE }
-  const gw = fakeCtx({ ...base, gateway: true })
-  await setup(gw.ctx)
-  assert.equal(gw.reg.provider.length, 1)
-  assert.equal(gw.reg.mcp.length + gw.reg.subscribed, 0)
-
-  const mcp = fakeCtx({ ...base, mcp: true })
-  await setup(mcp.ctx)
-  assert.deepEqual(mcp.reg.mcp, [{ name: "forgebench", config: { type: "remote", url: "https://gw.example.com/mcp", oauth: {} } }])
-  assert.equal(mcp.reg.provider.length + mcp.reg.hooks.length + mcp.reg.subscribed, 0)
-
-  const sync = fakeCtx({ ...base, sync: true })
-  const cleanup = await setup(sync.ctx, { sync: { start: () => ({}) } })
-  assert.equal(sync.reg.subscribed, 1)
-  assert.equal(sync.reg.provider.length + sync.reg.hooks.length + sync.reg.mcp.length, 0)
-  cleanup()
-  assert.equal(sync.reg.aborted, true)
+test("deployment overrides apply everywhere and a legacy `executable` option is accepted and ignored", async () => {
+  const { ctx, reg } = fakeCtx({ url: "https://gw.example.com/", mcpUrl: "https://mcp.example.com/x", executable: "/opt/forgebench", headers: { "X-Team": "t" } })
+  await setup(ctx, OFFLINE)
+  assert.equal(reg.provider[0].info.settings.baseURL, "https://gw.example.com/v1")
+  assert.equal(reg.mcp[0].config.url, "https://mcp.example.com/x")
+  assert.equal(reg.provider[0].info.headers["X-Team"], "t")
 })
 
-test("an explicit mcpUrl wins and the gateway slice needs url and executable", async () => {
-  const a = fakeCtx({ mcp: true, mcpUrl: "https://mcp.example.com/mcp" })
-  await setup(a.ctx)
-  assert.equal(a.reg.mcp[0].config.url, "https://mcp.example.com/mcp")
-  const b = fakeCtx({ gateway: true, url: "https://gw" })
-  await setup(b.ctx)
-  assert.deepEqual(b.reg.provider, [])
-})
-
-test("sync events spawn a detached sync, one at a time", async () => {
-  const children = []
-  const start = (exe, args) => {
-    const handlers = {}
-    const child = { exe, args, once: (name, cb) => { handlers[name] = cb }, finish: () => handlers.exit?.() }
-    children.push(child)
-    return child
+test("an invalid or non-https deployment url fails closed: nothing registers", async () => {
+  for (const url of ["http://api.example.com", "ftp://x", "not a url", "https://user:pw@api.example.com"]) {
+    const { ctx, reg } = fakeCtx({ url })
+    assert.equal(await setup(ctx, OFFLINE), undefined, url)
+    assert.deepEqual([reg.provider.length, reg.mcp.length, reg.toolHooks.length], [0, 0, 0])
   }
-  const sync = createSyncRunner({ executable: EXE, url: "https://gw", start })
-  sync(); sync(); sync()
-  assert.equal(children.length, 1)
-  assert.deepEqual(children[0].args, ["sync", "--quiet", "--url", "https://gw"])
-  children[0].finish()
-  assert.equal(children.length, 2)
-  children[1].finish()
-  assert.equal(children.length, 2)
+  const loopback = fakeCtx({ url: "http://127.0.0.1:8000" })
+  await setup(loopback.ctx, OFFLINE)
+  assert.equal(loopback.reg.provider[0].info.settings.baseURL, "http://127.0.0.1:8000/v1")
+})
 
-  const ran = []
-  const events = [{ type: "session.created" }, { type: "session.idle" }, { type: "session.execution.started" }, { type: "session.execution.failed" }]
-  const { ctx } = fakeCtx({ sync: true, executable: EXE }, events)
-  const cleanup = await setup(ctx, { sync: { start: (exe, args) => { ran.push([exe, args]); return {} } } })
-  await new Promise((resolve) => setImmediate(resolve))
-  // The stub child never emits `exit`, so the burst coalesces into the one running sync.
-  assert.deepEqual(ran, [[EXE, ["sync", "--quiet"]]])
-  cleanup()
+test("config conflict: a user-defined forgebench provider for another host is left untouched and never receives the key", async () => {
+  const userProvider = { id: PROVIDER_ID, name: "Mine", settings: { baseURL: "https://proxy.corp.example/v1" }, headers: { "X-Mine": "1" }, activation: "disabled" }
+  const providers = new Map([[PROVIDER_ID, { provider: userProvider, models: new Map() }]])
+  const { ctx, reg, storage } = fakeCtx({ ...gatewayOptions, apiKey: KEY }, { providers })
+  await setup(ctx, { ...OFFLINE, models: { fetchImpl: catalogFetch() } })
+  assert.deepEqual(userProvider, { id: PROVIDER_ID, name: "Mine", settings: { baseURL: "https://proxy.corp.example/v1" }, headers: { "X-Mine": "1" }, activation: "disabled" })
+  assert.equal(reg.provider.length, 0)
+  const out = await send(reg)
+  assert.equal(out.headers.authorization, undefined)
+  assert.equal(await storage.get("config-conflict:provider"), true)
+})
+
+test("a user's existing provider for the same deployment is merged, not replaced", async () => {
+  const userProvider = { id: PROVIDER_ID, name: "Mine", settings: { baseURL: "https://gw.example.com/v1", timeout: 5 }, headers: { "X-Mine": "1" } }
+  const providers = new Map([[PROVIDER_ID, { provider: userProvider, models: new Map() }]])
+  const { ctx } = fakeCtx(gatewayOptions, { providers })
+  await setup(ctx, OFFLINE)
+  assert.equal(userProvider.name, "Mine")
+  assert.equal(userProvider.settings.timeout, 5)
+  assert.equal(userProvider.headers["X-Mine"], "1")
+  assert.equal(userProvider.headers["X-Forgebench-Harness"], "opencode")
+})
+
+test("config conflict: an existing forgebench MCP entry is never overwritten", async () => {
+  const same = fakeCtx({ gateway: false, sync: false, mcpUrl: "https://mcp.example.com/x" }, { mcpExisting: { forgebench: { type: "remote", url: "https://mcp.example.com/x" } } })
+  await setup(same.ctx, OFFLINE)
+  assert.equal(same.reg.mcp.length, 0)
+  assert.equal(await same.storage.get("config-conflict:mcp"), undefined)
+  const other = fakeCtx({ gateway: false, sync: false }, { mcpExisting: { forgebench: { type: "remote", url: "https://elsewhere.example/mcp" } } })
+  await setup(other.ctx, OFFLINE)
+  assert.equal(other.reg.mcp.length, 0)
+  assert.equal(await other.storage.get("config-conflict:mcp"), true)
+})
+
+test("a request headed to a different base URL never gets the Forgebench credential", async () => {
+  const { ctx, reg } = fakeCtx({ ...gatewayOptions, apiKey: KEY })
+  await setup(ctx, OFFLINE)
+  const out = await send(reg, { baseURL: "https://evil.example/v1" })
+  assert.equal(out.headers.authorization, undefined)
+  const ok = await send(reg, { baseURL: "https://gw.example.com/v1" })
+  assert.equal(ok.headers.authorization, `Bearer ${KEY}`)
+})
+
+test("the plugin never invoked a forgebench executable during this file", () => {
+  assert.equal(tripwire.calls(), "")
+  tripwire.restore()
 })

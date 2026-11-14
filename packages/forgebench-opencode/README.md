@@ -1,57 +1,118 @@
 # @forgebench/opencode
 
 Forgebench plugin for **OpenCode 2.x only** (no 1.x hooks, no `config()` fallback). One V2 `Plugin.define`
-entry, loaded from the root `server.js`. The Bun host injects `@opencode/plugin`, so nothing is installed at runtime.
+entry, loaded from the root `server.js`, compiled from TypeScript into `dist/`. The OpenCode host provides
+`@opencode/plugin`, so nothing is installed at runtime.
+
+The plugin is **self-contained**. It does not need, download, locate, read credentials from, or run the
+Forgebench CLI. Browser sign-in, the governed model gateway, model discovery, and session, context and
+trace delivery all go straight from OpenCode to your Forgebench deployment. The CLI stays an optional
+manager (discovery, health checks, repair, historical import); its absence changes nothing here.
+
+## Install
+
+Requires OpenCode 2.x (`opencode --version`). OpenCode 2.x is the `@opencode/cli` npm package; the old
+`opencode-ai` package stops at 1.19.5 and owns the same `opencode` command, so remove it first:
+
+```sh
+npm uninstall -g opencode-ai && npm install -g @opencode/cli
+```
+
+Then use only OpenCode commands:
+
+```sh
+opencode plugin add @forgebench/opencode
+opencode auth login forgebench --method oauth
+```
+
+OpenCode installs the package and registers the Forgebench provider. Sign in with `/connect` (browser) or
+the command above, restart OpenCode if it asks you to, then pick a Forgebench model in `/models`. No
+options or JSON edits are needed for the hosted service at `https://api.forgebench.ai`.
+
+## What browser sign-in gives you
+
+Browser sign-in runs the same OIDC loopback PKCE login as the Forgebench CLI, then asks you to approve
+model access, which asks for your password a second time. It stores **two separate grants** in
+OpenCode's own credential store:
+
+| Grant | Used for | Where it lives |
+| --- | --- | --- |
+| Model key | `/v1/models` and every governed model request | OAuth `access` field |
+| Reporting key | session, context, trace and task delivery (`sessions:write` only) | secret OAuth `refresh` field |
+
+They are different keys with different permissions. A pasted gateway key creates no reporting
+credential.
+
+The model key must be one a workspace admin issued to you that has not been used yet. If there is none to
+offer, or you decline the consent page, a reconnect keeps the model key OpenCode already holds and stores the
+new reporting key. A first connection fails with that explanation; the unused reporting key stays on the
+server until your next sign-in from this install replaces it, or you revoke it in the console. Ask an admin for a developer key, or connect with a pasted key. The remote MCP server is a third, independent grant handled by OpenCode's own MCP OAuth.
+Keys never appear in URLs, logs, provider options or browser pages. The plugin never reads or writes
+another tool's credential store.
 
 ## Options
 
-Passed as `plugins: [{ "package": "<dir or name>", "options": { ... } }]` (or legacy `plugin: [[path, options]]`).
-Every slice is off unless its flag is `true`; with all flags off the plugin registers nothing.
+Passed as `plugins: [{ "package": "<dir or name>", "options": { ... } }]`. Omit options for the hosted
+defaults. Claude Agent context defaults off; other features default on; an explicit `false` turns it off, and all off registers nothing.
 
-| Option | Slice / use |
+| Option | Use |
 | --- | --- |
-| `gateway` | Register the `forgebench` provider, set `X-Forgebench-Session-Id` on each model request and `Authorization` on each HTTP send. Needs `url` and `executable`. |
-| `sync` | Spawn a detached `<executable> sync --quiet [--url <url>]` on `session.idle` and `session.execution.{succeeded,failed,interrupted}`. Needs `executable`. |
-| `mcp` | Register the remote OAuth MCP server `forgebench` at `mcpUrl` (default `<url>/mcp`). |
-| `url` | Forgebench origin; the provider `baseURL` is `<url>/v1`. |
-| `executable` | Path of the `forgebench` CLI. |
-| `models` | Resolved by the CLI at install time: ids or `{ id, name?, context?, output?, tools?, input? }`. |
-| `headers` | Static routing headers on the provider (`X-Forgebench-Harness: opencode` is the default). `Authorization` is ignored. |
+| `url` | Deployment origin (default `https://api.forgebench.ai`). Must be `https` (plain `http` only on loopback); anything else disables every network feature. |
+| `claudeAgentContext` | `true` opts Claude Agent primary sessions into client-side delegation advice and identity. Requires `gateway`. Pinned per session; off or unavailable policy pins identity without advice. Children receive identity only. Gateway-funded models are unaffected. |
+| `gateway` | Register the `forgebench` provider, model discovery and per-request credentials. |
+| `auth` | `"auto"` (default), `"oauth"`, `"key"` or `"none"`: which `/connect` methods are offered. |
+| `apiKey` | Static gateway key for headless/CI setups (prefer `/connect` or the env var). |
+| `reporting` | Direct session/context delivery. `sync: false` is accepted as the same opt-out. |
+| `context` | `false` keeps reporting on but sends no repository, branch or remote. |
+| `traces` | `false` stops tool and session spans. |
+| `task` | `{ "connectionId": "<uuid>", "taskId": "ENG-123" }`: an explicit task selection declared at session start. Never inferred from a branch. |
+| `mcp` / `mcpUrl` | Remote MCP server `forgebench` (default `<url>/mcp`). An existing `forgebench` MCP entry is left alone. |
+| `models` | Fallback models used until `/v1/models` is reachable. |
+| `headers` | Extra routing headers on the provider. `Authorization` is ignored. |
+| `executable` | Accepted for old configs and ignored. |
 
-Options never carry a key, and the provider is registered **without `apiKey`**. The key is set in the
-`http.request` hook, on every physical HTTP send, not in `model.request`. OpenCode prepares a model request
-once, and a compaction retry resends that prepared request, so a key placed in `model.request` would stay
-stale after a 401. `model.request` only strips any `Authorization` and sets `X-Forgebench-Session-Id`.
+If your config already defines a `forgebench` provider for a different host, the plugin leaves it exactly
+as it is, does not send it any Forgebench credential, and records the conflict in plugin storage.
 
-The key comes from `<executable> gateway token --forgebench-url <url>` for this deployment (stdout is the
-key only).
-- It is cached for 5 minutes, and the in-flight lookup is shared, so concurrent title and primary requests
-  spawn one process.
-- After 5 minutes, sends keep using the cached key immediately while one background refresh runs. Only a
-  lookup with no key yet waits for the command.
-- The last good key is kept until a refresh succeeds. A failed refresh, a forced refresh after a 401, or a
-  refresh that completes after its deadline never clears or overwrites it. A failed refresh does not renew
-  the TTL. Background retries wait 30 seconds, then double up to five minutes. A successful refresh
-  resets this delay; an explicit refresh after a 401 bypasses it.
-- Failures are logged to stderr once per failure streak, without command output or the key. A successful
-  fetch resets the streak.
+## Credentials, in order
 
-Each command retains a 30-second deadline, including the first lookup and 401 recovery, to allow cold
-single-file CLI startup. Cached requests do not wait for it. The plugin owns every process the command starts. On POSIX
-the command runs in its own process group. A onefile CLI bootstrap runs the real CLI as its child, so both
-are in that group. At the deadline the plugin sends the group SIGTERM, then SIGKILL 2 seconds later. After
-the command exits, anything it left in the group is killed. On Windows, `taskkill /T /F` ends the tree from
-the bootstrap. A descendant that deliberately leaves the group (`setsid`) is out of reach.
+Model requests: the active OpenCode connection, then the `apiKey` option, then `FORGEBENCH_GATEWAY_KEY`.
+Reporting: the reporting key from the active connection, else the explicit `FORGEBENCH_API_KEY`. Those
+environment variables are optional headless overrides that you set yourself; the plugin never writes them.
+A credential stored for another deployment is never used.
 
-Existing `Authorization` headers on a send to this provider are replaced. Without a previously fetched key, a
-failed lookup sends no `Authorization` (the gateway answers 401). On the first 401 retry (`attempt === 2`),
-the plugin awaits a forced refresh and requests an immediate retry only when that refresh produced a key.
-Later attempts keep OpenCode's retry decision. Both primary and compaction retries pick up the refreshed key
-in `http.request`; this is checked against OpenCode v2.2.7.
+## What is sent, and when
 
-## Test
+- **Gateway:** `Authorization`, `X-Forgebench-Session-Id`, `X-Forgebench-Harness: opencode` and a fresh
+  `X-Client-Request-Id` go only to the configured deployment. Budgets, model policy, metering and audit
+  stay server-side, and usage is measured at the gateway. The plugin never uploads token usage, so
+  nothing is counted twice.
+- **Sessions:** on session start and end, `POST /v1/sessions/meta` with the full native session id,
+  real parent id for subagents, timestamps, safe repository/branch names and counters. Prompts, code,
+  paths and tool inputs are never sent.
+- **Traces:** OpenCode has no native OpenTelemetry exporter, so the plugin builds its own metadata-only
+  spans from OpenCode's tool hooks (tool name, timing, status, parentage) and posts them with the
+  reporting key. This requires a backend that returns an explicit storage receipt; otherwise the plugin
+  reports traces as unsupported and stops trying for an hour. It does not claim OTel.
+- **Reliability:** a bounded local spool, exponential backoff with jitter, `Retry-After`, no replay of
+  400/403/409/422, and a pause after a `401` (revoked or expired grant) until you sign in again. Capture
+  policy (`off`, `local`, `otel`, ...) is checked before every upload.
 
-```
-npm test          # node --test test/   (also passes under `bun test`)
-npm run smoke     # real OpenCode 2.x, throwaway HOME/XDG under /tmp, mock OpenAI server; skips if not installed
+Features that depend on backend capabilities that may not be deployed yet are isolated in
+`src/core/proposed.ts` and fail closed.
+
+## Layout
+
+- `src/core/`: runtime-independent modules (backend client, sign-in, queue, delivery, redaction,
+  payloads, catalog). They import nothing from `@opencode/*`, so a future OpenCode 1.x package can reuse them.
+- `src/v2/` and `src/server.ts`: the OpenCode 2.x adapter (`Plugin.define`, `setup`, integration and
+  session hooks).
+
+## Develop
+
+```sh
+npm ci
+npm run typecheck
+npm test          # clean build, then node --test (core, V2 adapter, sign-in, release scripts)
+npm run smoke     # real OpenCode 2.x in a throwaway HOME/XDG tree with a fake backend; skips if not installed
 ```

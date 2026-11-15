@@ -166,15 +166,19 @@ test("stageSource copies source for the public mirror, without node_modules, and
 })
 
 test("stageSource stamps a dev or staging build into VERSION and package.json of the copy only", () => {
-  const dest = path.join(tmp(), "dev")
-  stageSource(PKG, dest, { channel: "dev", build: "12" })
-  const base = fs.readFileSync(path.join(PKG, "VERSION"), "utf8").trim()
-  assert.equal(fs.readFileSync(path.join(dest, "VERSION"), "utf8").trim(), `${base}-dev.12`)
-  assert.equal(JSON.parse(fs.readFileSync(path.join(dest, "package.json"), "utf8")).version, `${base}-dev.12`)
-  assert.equal(fs.readFileSync(path.join(PKG, "VERSION"), "utf8").trim(), base)
-  assert.equal(checkAgreement(dest), `${base}-dev.12`)
-  assert.throws(() => stageSource(PKG, path.join(tmp(), "a"), { channel: "prod", build: "1" }), /channel/)
-  assert.throws(() => stageSource(PKG, path.join(tmp(), "b"), { channel: "dev", build: "x" }), /build/)
+  const source = seed("1.2.3")
+  for (const channel of ["dev", "staging"]) {
+    const dest = path.join(tmp(), channel)
+    stageSource(source, dest, { channel, build: "12" })
+    assert.equal(readVersion(dest), `1.2.3-${channel}.12`)
+    assert.equal(checkAgreement(dest), `1.2.3-${channel}.12`)
+    assert.equal(checkAgreement(source), "1.2.3")
+  }
+  assert.throws(() => stageSource(source, path.join(tmp(), "a"), { channel: "prod", build: "1" }), /channel/)
+  assert.throws(() => stageSource(source, path.join(tmp(), "b"), { channel: "dev", build: "x" }), /build/)
+  for (const version of ["1.2.3-dev.1", "1.2.3-staging.1"]) {
+    assert.throws(() => stageSource(seed(version), path.join(tmp(), "c"), { channel: "dev", build: "2" }), /stable VERSION/)
+  }
 })
 
 test("stageSource refuses a source whose VERSION and package.json disagree", () => {
@@ -341,7 +345,7 @@ test("a staged copy passes npm publish --dry-run", async () => {
   try {
     const port = server.address().port
     const result = await new Promise((resolve, reject) => {
-      const child = spawn("npm", ["publish", "--dry-run", "--ignore-scripts", "--fetch-retries=0", `--registry=http://127.0.0.1:${port}`], { cwd: dest, env: { ...process.env, HOME: tmp() } })
+      const child = spawn("npm", ["publish", "--dry-run", "--ignore-scripts", "--tag", distTag(readVersion(dest)), "--fetch-retries=0", `--registry=http://127.0.0.1:${port}`], { cwd: dest, env: { ...process.env, HOME: tmp() } })
       let err = ""
       child.stderr.on("data", (data) => (err += data))
       child.on("error", reject)

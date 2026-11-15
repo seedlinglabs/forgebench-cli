@@ -64,7 +64,7 @@ export function verifyChannel(version, ref) {
   return channel
 }
 
-const REQUIRED = ["server.js", "package.json", "LICENSE", "README.md"]
+const REQUIRED = ["server.js", "dist/server.js", "package.json", "LICENSE", "README.md"]
 const FORBIDDEN = [
   [/^(test|tests|scripts|publisher|node_modules|\.github)\//, "development directory"],
   [/(^|\/)\.env(\..*)?$/, "environment file"],
@@ -75,12 +75,13 @@ const FORBIDDEN = [
   [/(^|\/)\.DS_Store$/, "OS artifact"],
   [/\.test\.[cm]?js$/, "test file"],
   [/(^|\/)(RELEASING\.md|VERSION[^/]*)$/, "release metadata"],
+  [/^dist\/(sync|cli|token)\.js$/, "stale Forgebench CLI bridge module"],
 ]
 
 export function inspectPackFiles(files) {
   const problems = []
   for (const r of REQUIRED) if (!files.includes(r)) problems.push(`missing ${r}`)
-  if (!files.some((f) => f.startsWith("src/"))) problems.push("missing src/")
+  if (!files.some((f) => f.startsWith("dist/core/"))) problems.push("missing dist/core/ (run npm run build)")
   for (const f of files) for (const [re, why] of FORBIDDEN) if (re.test(f)) problems.push(`${f}: ${why}`)
   return problems
 }

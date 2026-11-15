@@ -13,8 +13,15 @@ import {
 import { checkPublished, checkNewer } from "../scripts/check-published.mjs"
 
 const PKG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
-const SYNC_WF = path.resolve(PKG, "../../.github/workflows/release-forgebench-opencode.yml")
-const PLUGIN_WF = path.resolve(PKG, "../../.github/workflows/release-forgebench-plugin.yml")
+// The OpenCode and plugin release jobs live in release-packages.yml (prefixed opencode-*
+// and plugin-*); push.yml calls it per package and holds each package's concurrency group.
+const RELEASES_WF = path.resolve(PKG, "../../.github/workflows/release-packages.yml")
+const PUSH_WF = path.resolve(PKG, "../../.github/workflows/push.yml")
+const SYNC_WF = RELEASES_WF
+const PLUGIN_WF = RELEASES_WF
+const section = (y, from, to) => y.slice(y.indexOf(from), to && y.indexOf(to) > y.indexOf(from) ? y.indexOf(to) : undefined)
+const openCodeJobs = () => section(fs.readFileSync(SYNC_WF, "utf8"), "  opencode-validate:")
+const pluginJobs = () => section(fs.readFileSync(PLUGIN_WF, "utf8"), "  plugin-validate:", "  opencode-validate:")
 const IS_SOURCE = JSON.parse(fs.readFileSync(path.join(PKG, "package.json"), "utf8")).private === true && fs.existsSync(SYNC_WF)
 const SRC = { skip: !IS_SOURCE && "monorepo source only" }
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "fb-oc-rel-"))
@@ -92,11 +99,11 @@ test("the committed source package agrees with VERSION and stays private; publis
   assert.equal(pj.publishConfig.access, "public")
 })
 
-test("inspectPackFiles requires server.js, src, package.json, LICENSE, README and refuses dev artifacts", () => {
-  const ok = ["server.js", "src/plugin.js", "package.json", "LICENSE", "README.md"]
+test("inspectPackFiles requires server.js, built dist, package.json, LICENSE, README and refuses dev artifacts", () => {
+  const ok = ["server.js", "dist/server.js", "dist/core/backend.js", "package.json", "LICENSE", "README.md"]
   assert.deepEqual(inspectPackFiles(ok), [])
   assert.ok(inspectPackFiles(["server.js", "package.json"]).some((p) => /missing.*LICENSE/i.test(p)))
-  for (const bad of ["test/plugin.test.js", "scripts/smoke.mjs", ".env", ".env.local", ".npmrc", "key.pem", "node_modules/x/index.js", ".DS_Store", "src/a.test.js", "RELEASING.md", "publisher/x.yml", "VERSION.bak", "id_rsa", "credentials.json"]) {
+  for (const bad of ["test/plugin.test.js", "scripts/smoke.mjs", ".env", ".env.local", ".npmrc", "key.pem", "node_modules/x/index.js", ".DS_Store", "dist/a.test.js", "dist/sync.js", "dist/cli.js", "dist/token.js", "RELEASING.md", "publisher/x.yml", "VERSION.bak", "id_rsa", "credentials.json"]) {
     assert.ok(inspectPackFiles([...ok, bad]).some((p) => p.includes(bad)), bad)
   }
 })
@@ -107,6 +114,17 @@ test("npm pack of the real package passes inspection and contains root server.js
   assert.ok(files.includes("server.js"))
   assert.ok(files.includes("LICENSE"))
   assert.ok(!files.some((f) => f.startsWith("test/") || f.startsWith("scripts/")))
+})
+
+test("the packed plugin ships no Forgebench CLI bridge and never spawns or installs a CLI", () => {
+  const files = packFiles(PKG)
+  assert.ok(files.includes("dist/server.js") && files.includes("dist/core/delivery.js"))
+  for (const stale of ["dist/sync.js", "dist/cli.js", "dist/token.js"]) assert.ok(!files.includes(stale), stale)
+  for (const file of files.filter((f) => f.endsWith(".js") || f.endsWith(".d.ts"))) {
+    const text = fs.readFileSync(path.join(PKG, file), "utf8")
+    assert.ok(!/createSyncRunner|gateway token|sync --quiet|cli\.ensure|install\.sh|forgebench\.exe/.test(text), `${file} references the CLI`)
+    assert.ok(!/from\s+["']node:child_process["']/.test(text) || file === "dist/v2/context.js", `${file} imports child_process`)
+  }
 })
 
 test("scanSecrets finds tokens and private keys, ignores clean files", () => {
@@ -196,7 +214,7 @@ test("the publisher workflow has least permissions, the npm token only in the pu
 })
 
 test("the source-sync workflow only writes outside .github of the public repo", SRC, () => {
-  const y = fs.readFileSync(SYNC_WF, "utf8")
+  const y = openCodeJobs()
   assert.match(y, /seedlinglabs\/forgebench-cli/)
   assert.match(y, /github\.ref_name == 'main'/)
   assert.match(y, /opencode-dev/)
@@ -242,10 +260,12 @@ test("check-published CLI exit codes: 0 published, 3 not-published, 4 unverifiab
 })
 
 const WORKFLOWS = [path.join(PKG, "publisher/publish-opencode-plugin.yml"), SYNC_WF].filter((f) => fs.existsSync(f))
+// release-packages.yml holds every package; these checks cover the OpenCode jobs, as when they had their own file.
+const workflowText = (f) => (f === SYNC_WF ? openCodeJobs() : fs.readFileSync(f, "utf8"))
 
 test("no workflow interpolates inputs or event data inside a run block", () => {
   for (const f of WORKFLOWS) {
-    const lines = fs.readFileSync(f, "utf8").split("\n")
+    const lines = workflowText(f).split("\n")
     let inRun = false, indent = 0
     lines.forEach((line, n) => {
       const m = line.match(/^(\s*)(?:- )?run:\s*(.*)$/)
@@ -264,7 +284,7 @@ test("the publisher passes the requested version through env and validates it", 
 
 test("workflows pin actions by commit SHA and set job timeouts", () => {
   for (const f of WORKFLOWS) {
-    const y = fs.readFileSync(f, "utf8")
+    const y = workflowText(f)
     const uses = [...y.matchAll(/uses:\s*(\S+)(.*)/g)]
     assert.ok(uses.length > 0)
     for (const [, ref, rest] of uses) {
@@ -341,20 +361,20 @@ test("scanSecrets finds forgebench sk_ keys and ignores risk_ lookalikes", () =>
 })
 
 test("source-sync token is down-scoped, staging precedes the public checkout, the group is its own and the push rebases and retries", SRC, () => {
-  const y = fs.readFileSync(SYNC_WF, "utf8")
+  const y = openCodeJobs()
   assert.match(y, /permission-contents: write/)
   assert.ok(y.indexOf("Stage source") < y.indexOf("Check out public repo"))
   assert.doesNotMatch(y, /forgebench-cli-main-sync/)
-  assert.doesNotMatch(fs.readFileSync(PLUGIN_WF, "utf8"), /forgebench-cli-main-sync/)
-  assert.match(y, /group: release-forgebench-opencode-/)
+  assert.doesNotMatch(pluginJobs(), /forgebench-cli-main-sync/)
+  assert.match(fs.readFileSync(PUSH_WF, "utf8"), /group: release-forgebench-opencode-/)
   assert.match(y, /for attempt in 1 2 3/)
   assert.match(y, /git fetch origin main\n\s+git rebase origin\/main/)
   assert.match(y, /test "\$pushed" -eq 1/)
 })
 
 test("source validate job tests the staged mirror shape", SRC, () => {
-  const y = fs.readFileSync(SYNC_WF, "utf8")
-  const v = y.slice(y.indexOf("  validate:"), y.indexOf("  sync:"))
+  const y = openCodeJobs()
+  const v = y.slice(y.indexOf("  opencode-validate:"), y.indexOf("  opencode-sync:"))
   assert.match(v, /release\.mjs stage --destination "\$RUNNER_TEMP\/x"/)
   for (const c of ["npm test", "release.mjs scan", "release.mjs inspect"]) assert.match(v.slice(v.indexOf("RUNNER_TEMP/x")), new RegExp(c.replace(".", "\\.")))
 })

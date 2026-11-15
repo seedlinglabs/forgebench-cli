@@ -1,0 +1,46 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "forgebench-opencode",
+  "projectType": "library",
+  "tags": [
+    "lang:ts",
+    "scope:plugin"
+  ],
+  "targets": {
+    "install": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "command": "npm ci --prefer-offline --no-audit --no-fund",
+        "cwd": "packages/forgebench-opencode"
+      }
+    },
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npm run typecheck",
+        "cwd": "packages/forgebench-opencode"
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "outputs": [
+        "{projectRoot}/dist"
+      ],
+      "options": {
+        "command": "npm test",
+        "cwd": "packages/forgebench-opencode"
+      }
+    },
+    "build": {
+      "executor": "nx:run-commands",
+      "outputs": [
+        "{projectRoot}/dist"
+      ],
+      "options": {
+        "command": "npm run build",
+        "cwd": "packages/forgebench-opencode"
+      }
+    }
+  }
+}

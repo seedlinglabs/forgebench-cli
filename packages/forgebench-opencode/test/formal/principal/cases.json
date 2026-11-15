@@ -1,0 +1,1 @@
+{"spec":"Owner.tla","cases":[{"name":"Bound","config":"Bound.cfg"},{"name":"InstallOnly","config":"InstallOnly.cfg","violates":"NoCrossPrincipalDelivery"},{"name":"AdoptReplacement","config":"AdoptReplacement.cfg","violates":"NoCrossPrincipalDelivery"}]}

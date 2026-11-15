@@ -8,7 +8,7 @@ repo (decision #1062) so provenance comes from public source.
 
 1. Set `VERSION` (exact semver, no range, no `v`), run `node scripts/release.mjs stamp`, commit both. The mirror
    workflow stages the package and strips `private` in the staged copy only.
-2. Merge to `develop` to publish a dev edition, then promote through `staging` to `main`. `.github/workflows/release-forgebench-opencode.yml`
+2. Merge to `develop` to publish a dev edition, then promote through `staging` to `main`. `.github/workflows/release-packages.yml` (jobs `opencode-*`, called by `push.yml`)
    mirrors the package to `packages/forgebench-opencode` in forgebench-cli. It never publishes and never writes
    under `.github/`.
 3. **Workflow install (human, once).** Copy `publisher/publish-opencode-plugin.yml` to
@@ -69,7 +69,7 @@ the final control. A passing local `npm publish --dry-run` of a staged copy does
 
 ## Automatic publication
 
-After the source sync on `develop`, `staging`, or `main`, the `sync` job in `release-forgebench-opencode.yml` runs `gh workflow run publish-opencode-plugin.yml` in `seedlinglabs/forgebench-cli` with the exact `VERSION`, unless npm already has that version. This needs two things in place, once:
+After the source sync on `develop`, `staging`, or `main`, the `opencode-sync` job in `release-packages.yml` runs `gh workflow run publish-opencode-plugin.yml` in `seedlinglabs/forgebench-cli` with the exact `VERSION`, unless npm already has that version. This needs two things in place, once:
 
 1. `publisher/publish-opencode-plugin.yml` installed at `.github/workflows/publish-opencode-plugin.yml` in `seedlinglabs/forgebench-cli`.
 2. The sync GitHub App granted **Actions: write** on `forgebench-cli`.

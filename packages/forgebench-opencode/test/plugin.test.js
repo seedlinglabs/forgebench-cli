@@ -58,6 +58,21 @@ test("cleanup waits for an in-flight native session report", async () => {
   assert.equal(backend.count("/v1/sessions/meta"), 1)
 })
 
+test("switching another integration's credential leaves the gateway catalog alone", async () => {
+  const backend = fakeBackend({ "GET /v1/models": { data: [{ id: "allowed", kind: "chat" }] } })
+  const { ctx, reg, providers } = fakeCtx({ ...gatewayOptions, apiKey: KEY, sync: false, mcp: false }, {
+    events: [{
+      type: "credential.switched",
+      data: { integrationID: "another-provider", credentialID: "another-credential" },
+    }],
+  })
+  const close = await setup(ctx, { models: { fetchImpl: backend.fetchImpl } })
+  await close()
+  assert.equal(backend.count("/v1/models"), 1)
+  assert.equal(reg.reloads, 1)
+  assert.deepEqual([...providers.get(PROVIDER_ID).models.keys()], ["allowed"])
+})
+
 test("provider is registered from options without apiKey in its settings, and the harness header is kept", async () => {
   const { ctx, reg } = fakeCtx(gatewayOptions)
   await setup(ctx, OFFLINE)
@@ -180,7 +195,7 @@ test("sign-in failures propagate to the connect UI", async () => {
   await assert.rejects(authorization.callback, /declined/)
 })
 
-const catalog = { data: [{ id: "live-model", kind: "chat", available: true, context_window: 9000, max_output_tokens: 700, description: "Live", input_per_1k_usd: 0.001, output_per_1k_usd: 0.002 }, { id: "embed", kind: "embedding" }] }
+const catalog = { data: [{ id: "live-model", kind: "chat", available: true, context_window: 9000, max_output_tokens: 700, label: "Live", description: "Shared provider description", input_per_1k_usd: 0.001, output_per_1k_usd: 0.002 }, { id: "embed", kind: "embedding" }] }
 const catalogFetch = (calls = []) => async (url, init) => { calls.push({ url: String(url), init }); return Response.json(catalog) }
 
 test("discovery replaces the fallback models, survives reloads, and uses the resolved key", async () => {
@@ -191,6 +206,7 @@ test("discovery replaces the fallback models, survives reloads, and uses the res
   assert.equal(calls[0].init.headers.Authorization, `Bearer ${KEY}`)
   assert.deepEqual([...providers.get(PROVIDER_ID).models.keys()], ["live-model"])
   const model = providers.get(PROVIDER_ID).models.get("live-model")
+  assert.equal(model.name, "Live")
   assert.equal(model.limit.context, 9000)
   assert.equal(model.cost[0].input, 1)
   assert.ok(reg.reloads >= 1)
@@ -206,6 +222,40 @@ test("failed or credential-less discovery keeps the fallback list", async () => 
   assert.equal(calls.length, 0)
   assert.deepEqual([...anonymous.providers.get(PROVIDER_ID).models.keys()], ["gpt-5", "claude-x"])
 })
+
+test("startup waits for a successful catalog past three seconds", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] })
+  let started
+  const fetching = new Promise((resolve) => { started = resolve })
+  let finish
+  const response = new Promise((resolve) => { finish = resolve })
+  const { ctx, providers } = fakeCtx({ ...gatewayOptions, apiKey: KEY })
+  const fetchImpl = () => { started(); return response }
+  let ready = false
+  const pending = setup(ctx, { ...OFFLINE, models: { fetchImpl } }).then(() => { ready = true })
+  await fetching
+  t.mock.timers.tick(3_001)
+  await new Promise(setImmediate)
+  const readyBeforeCatalog = ready
+  finish(Response.json(catalog))
+  await pending
+  assert.equal(readyBeforeCatalog, false)
+  assert.deepEqual([...providers.get(PROVIDER_ID).models.keys()], ["live-model"])
+})
+
+test("an empty eligible chat catalog clears the configured fallback", async () => {
+  const { ctx, providers } = fakeCtx({ ...gatewayOptions, apiKey: KEY })
+  await setup(ctx, { ...OFFLINE, models: { fetchImpl: async () => Response.json({ data: [{ id: "embed", kind: "embedding" }] }) } })
+  assert.deepEqual([...providers.get(PROVIDER_ID).models.keys()], [])
+})
+
+for (const status of [401, 403]) {
+  test(`HTTP ${status} removes configured fallback models`, async () => {
+    const { ctx, providers } = fakeCtx({ ...gatewayOptions, apiKey: KEY })
+    await setup(ctx, { ...OFFLINE, models: { fetchImpl: async () => new Response(null, { status }) } })
+    assert.deepEqual([...providers.get(PROVIDER_ID).models.keys()], [])
+  })
+}
 
 test("a credential event with a working gateway swaps the model list", async () => {
   const conn = fakeConnection(undefined)

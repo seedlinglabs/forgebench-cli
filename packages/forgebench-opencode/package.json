@@ -1,6 +1,6 @@
 {
   "name": "@forgebench/opencode",
-  "version": "0.2.0",
+  "version": "0.2.2-staging.195",
   "description": "Forgebench plugin for OpenCode 2.x: governed gateway provider, native browser sign-in, model discovery, and direct session, context and trace reporting. No Forgebench CLI required.",
   "license": "Apache-2.0",
   "type": "module",

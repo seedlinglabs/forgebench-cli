@@ -17,6 +17,41 @@ async function gateway(connection) {
   return { hook, changed }
 }
 
+test("model discovery fences previous accounts and restores only the same key's catalog on an outage", async () => {
+  const conn = fakeConnection({ type: "key", key: "first" })
+  const { ctx, providers } = fakeCtx({}, { connection: conn.connection })
+  const visible = () => [...providers.get("forgebench").models.keys()]
+  const response = (id) => Response.json({ data: [{ id, kind: "chat" }] })
+  let fetch = async () => response("first-model")
+  const changed = await registerGateway(ctx, { url, models: [], headers: {} }, {
+    models: { fetchImpl: (...args) => fetch(...args) },
+  })
+  assert.deepEqual(visible(), ["first-model"])
+  fetch = async () => { throw new Error("offline") }
+  await changed()
+  assert.deepEqual(visible(), ["first-model"])
+
+  let release, start
+  const started = new Promise(resolve => { start = resolve })
+  fetch = () => { start(); return new Promise(resolve => { release = resolve }) }
+  const pending = changed(false)
+  await started
+  assert.deepEqual(visible(), ["first-model"], "integration updates retain the current key's models during refresh")
+  conn.state.credential = { type: "key", key: "second" }
+  fetch = async () => { throw new Error("offline") }
+  const switched = changed()
+  assert.deepEqual(visible(), [])
+  release(response("stale-first-model"))
+  await Promise.all([pending, switched])
+  assert.deepEqual(visible(), [])
+  fetch = async () => response("second-model")
+  await changed()
+  assert.deepEqual(visible(), ["second-model"])
+  conn.state.credential = undefined
+  await changed()
+  assert.deepEqual(visible(), [])
+})
+
 test("a prepared request picks up the replacement credential after its first 401", async () => {
   const conn = fakeConnection({ type: "key", key: "first-key" })
   const { hook } = await gateway(conn.connection)

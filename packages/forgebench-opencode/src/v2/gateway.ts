@@ -3,13 +3,32 @@ import type { Plugin, Provider } from "@opencode/plugin"
 import { createCredentialResolver } from "./auth.js"
 import { CLIENT_REQUEST_HEADER, HARNESS_HEADER, PROVIDER_ID, SESSION_HEADER } from "./options.js"
 import type { GatewayOptions } from "./options.js"
-import { fetchModels } from "./models.js"
+import { DEFAULT_TIMEOUT_MS, fetchModels } from "./models.js"
 import type { ModelFetchOptions } from "./models.js"
 
-const FIRST_DISCOVERY_MS = 3000
+/**
+ * How long setup waits for the first catalog before continuing on the fallback list. Cold model
+ * selection snapshots the provider as soon as setup finishes, and /v1/models takes 4-6 s on a cold
+ * tenant, so this equals the catalog fetch timeout: a slow answer is never abandoned at startup.
+ */
+export const FIRST_DISCOVERY_MS = DEFAULT_TIMEOUT_MS
+/**
+ * Background retries after a transient discovery failure (timeout, network, 5xx), so a slow or
+ * flapping gateway recovers in-session. A 401/403 is not an error here: fetchModels returns an
+ * empty catalog for it, which clears the picker, and the next credential event refreshes.
+ */
+export const DISCOVERY_RETRY_MS = [5_000, 15_000, 45_000, 120_000]
 export type GatewayDependencies = {
   models?: Partial<Omit<ModelFetchOptions, "url" | "key">>
+  /** Test seams for the discovery timings above. */
+  firstDiscoveryMs?: number
+  discoveryRetryMs?: number[]
 }
+/**
+ * Refreshes the model list after a credential event. `credentialChanged` (default true) hides the
+ * previous account's list until the current key answers; `dispose` stops pending retries.
+ */
+export type ModelRefresh = ((credentialChanged?: boolean) => Promise<void>) & { dispose(): void }
 export type GatewayHooks = {
   /** Called when an existing user definition differs from the Forgebench deployment; it is left untouched. */
   onConflict?: (what: "provider") => void
@@ -50,7 +69,7 @@ export async function registerGateway(
   gateway: GatewayOptions,
   deps: GatewayDependencies = {},
   hooks: GatewayHooks = {},
-): Promise<() => Promise<void>> {
+): Promise<ModelRefresh> {
   const state = { models: gateway.models, conflict: false }
   const baseURL = `${gateway.url}/v1`
   const resolveCredential = createCredentialResolver({ url: gateway.url, apiKey: gateway.apiKey, integration: ctx.integration })
@@ -90,19 +109,57 @@ export async function registerGateway(
     editor.models.set(PROVIDER_ID, state.models)
   })
 
+  let lastCatalog: { key: string; models: GatewayOptions["models"] } | undefined
+  // The configured fallback belongs to the key in use at startup, and only until the gateway answers
+  // for that key (a catalog, empty, or 401/403): after a switch to another key, or after that answer,
+  // it is never shown again, and only a key's confirmed catalog can be restored.
+  let fallbackKey: string | undefined
+  let fallbackSpent = false
   const discover = async () => {
     if (state.conflict) return
+    const generation = resolveCredential.generation()
     const credential = await resolveCredential()
+    if (generation !== resolveCredential.generation()) return
+    if (lastCatalog && lastCatalog.key !== credential) {
+      lastCatalog = undefined
+      state.models = []
+      await ctx.provider.reload?.()
+    }
     if (!credential) return
-    const catalog = await fetchModels({ url: gateway.url, key: credential, ...(deps.models ?? {}) })
-    if (!catalog.models.length) return
-    state.models = catalog.models
-    await ctx.provider.reload?.()
+    fallbackKey ??= credential
+    // A transient failure restores what belongs to this key (its last catalog, or the configured
+    // fallback while it is still the startup key) and is rethrown so refreshModels schedules a
+    // bounded retry. 401/403 arrive as an empty catalog.
+    let failure: unknown
+    const models = await fetchModels({ url: gateway.url, key: credential, ...(deps.models ?? {}) })
+      .then(catalog => catalog.models, (error: unknown) => {
+        failure = error ?? new Error("catalog fetch failed")
+        return lastCatalog?.models ?? (credential === fallbackKey && !fallbackSpent ? gateway.models : undefined)
+      })
+    if (generation !== resolveCredential.generation() || state.conflict) return
+    if (!failure && credential === fallbackKey) fallbackSpent = true
+    if (models) {
+      lastCatalog = { key: credential, models }
+      state.models = models
+      await ctx.provider.reload?.()
+    }
+    if (failure) throw failure
   }
   let inflight: Promise<void> | undefined
-  const refreshModels = () => {
+  let retryTimer: ReturnType<typeof setTimeout> | undefined
+  let attempt = 0
+  let disposed = false
+  const retryDelays = deps.discoveryRetryMs ?? DISCOVERY_RETRY_MS
+  const scheduleRetry = () => {
+    if (disposed || retryTimer || attempt >= retryDelays.length) return
+    retryTimer = setTimeout(() => { retryTimer = undefined; void refreshModels() }, retryDelays[attempt++])
+    retryTimer.unref?.()
+  }
+  const refreshModels = (): Promise<void> => {
     if (inflight) return inflight
-    inflight = discover().catch(() => {}).finally(() => { inflight = undefined })
+    inflight = discover()
+      .then(() => { attempt = 0 }, () => scheduleRetry())
+      .finally(() => { inflight = undefined })
     return inflight
   }
 
@@ -159,16 +216,36 @@ export async function registerGateway(
     { providerID: PROVIDER_ID },
   )
 
-  // First catalog read, raced with a short timeout: with no reachable gateway
-  // (or no credential yet) setup continues on the fallback list.
-  await Promise.race([
-    refreshModels(),
-    new Promise((resolve) => setTimeout(resolve, FIRST_DISCOVERY_MS).unref?.()),
-  ])
-  // A credential event: the cached key may be the one that was just replaced or removed.
-  return async () => {
-    resolveCredential.invalidate()
-    await inflight
-    await refreshModels()
+  // Cold model selection snapshots the provider as soon as setup finishes.
+  // Give discovery its catalog deadline before exposing the fallback list.
+  let startupTimer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      refreshModels(),
+      new Promise<void>((resolve) => {
+        startupTimer = setTimeout(resolve, deps.firstDiscoveryMs ?? deps.models?.timeoutMs ?? FIRST_DISCOVERY_MS)
+        startupTimer.unref?.()
+      }),
+    ])
+  } finally {
+    clearTimeout(startupTimer)
   }
+  // A credential event: the cached key may be the one that was just replaced or removed.
+  return Object.assign(
+    async (credentialChanged = true) => {
+      resolveCredential.invalidate()
+      // Hide whatever is shown (a catalog or the configured fallback) until the current key answers.
+      if (credentialChanged && state.models.length) {
+        state.models = []
+        await ctx.provider.reload?.()
+      }
+      await inflight
+      // After the old discovery settles: its failure may have armed a retry for the old key.
+      clearTimeout(retryTimer)
+      retryTimer = undefined
+      attempt = 0
+      await refreshModels()
+    },
+    { dispose() { disposed = true; clearTimeout(retryTimer); retryTimer = undefined } },
+  )
 }

@@ -18,7 +18,8 @@ export function toModelInfo(entry: CatalogModel): Model.Info {
     capabilities: { tools: entry.tools, input: entry.vision ? ["text", "image"] : ["text"], output: ["text"] },
     variants: effortVariants(entry.reasoningEfforts),
     time: { released: 0 },
-    cost: entry.inputPer1kUsd !== undefined && entry.outputPer1kUsd !== undefined
+    // A virtual auto/* model costs whatever it routes to: no price, so OpenCode does not call it "Free".
+    cost: !entry.virtual && entry.inputPer1kUsd !== undefined && entry.outputPer1kUsd !== undefined
       ? [{ input: price(entry.inputPer1kUsd * 1000), output: price(entry.outputPer1kUsd * 1000), cache: { read: price(0), write: price(0) } }]
       : [],
     status: "active",
@@ -35,6 +36,9 @@ export const toCatalog = (entries: unknown): Model.Info[] => parseCatalog(entrie
 
 export type ModelFetchOptions = CatalogFetchOptions
 export async function fetchModels(options: ModelFetchOptions) {
-  const catalog = await fetchCatalog(options)
+  const catalog = await fetchCatalog(options).catch((error) => {
+    if (error?.status === 401 || error?.status === 403) return { models: [], defaultModel: undefined }
+    throw error
+  })
   return { models: catalog.models.map(toModelInfo), defaultModel: catalog.defaultModel }
 }

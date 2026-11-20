@@ -29,6 +29,11 @@ OpenCode installs the package and registers the Forgebench provider. Sign in wit
 the command above, restart OpenCode if it asks you to, then pick a Forgebench model in `/models`. No
 options or JSON edits are needed for the hosted service at `https://api.forgebench.ai`.
 
+In `/models` each entry reads as the model and the route that serves it, for example
+`Gemini 3.8 Flash (Gemini API)`, `Gemini 3.8 Flash (Vertex)` and `Gemini 3.8 Flash (OpenRouter)`: the same
+model over different credentials in your workspace, each at its own price. `Auto: …` entries are virtual models, so they show no price.
+The catalog is read when OpenCode starts (up to 15 s) and retried in the background if the gateway is slow.
+
 ## What browser sign-in gives you
 
 Browser sign-in runs the same OIDC loopback PKCE login as the Forgebench CLI, then asks you to approve
@@ -67,12 +72,31 @@ defaults. Claude Agent context defaults off; other features default on; an expli
 | `traces` | `false` stops tool and session spans. |
 | `task` | `{ "connectionId": "<uuid>", "taskId": "ENG-123" }`: an explicit task selection declared at session start. Never inferred from a branch. |
 | `mcp` / `mcpUrl` | Remote MCP server `forgebench` (default `<url>/mcp`). An existing `forgebench` MCP entry is left alone. |
-| `models` | Fallback models used until `/v1/models` is reachable. |
+| `models` | Fallback models used before the first successful `/v1/models` response. |
 | `headers` | Extra routing headers on the provider. `Authorization` is ignored. |
 | `executable` | Accepted for old configs and ignored. |
 
 If your config already defines a `forgebench` provider for a different host, the plugin leaves it exactly
 as it is, does not send it any Forgebench credential, and records the conflict in plugin storage.
+
+OpenCode waits up to 15 seconds at startup for the gateway catalog. A successful
+response replaces the configured list, including when there are zero eligible
+chat models. A 401 or 403 also clears the visible list. A timeout, network error or 5xx keeps the
+current key's last list and retries in the background (5, 15, 45 and 120 s). Entries are named from the
+gateway's `display_name` and `route` (see above), falling back to a curated label or the model ID.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Discovering: registerGateway
+    Discovering --> GatewayModels: fetchModels returns an eligible list, including empty
+    Discovering --> GatewayModels: 401 or 403 clears the list
+    Discovering --> Fallback: no credential, transient error, or startup deadline
+    Fallback --> GatewayModels: late success, background retry or credential refresh succeeds
+    GatewayModels --> CheckingAccount: credential change hides the previous list
+    CheckingAccount --> GatewayModels: current key returns catalog or denial
+    CheckingAccount --> GatewayModels: same key and transient failure restore its last list
+    CheckingAccount --> NoModels: signed out or new key cannot fetch
+```
 
 ## Credentials, in order
 

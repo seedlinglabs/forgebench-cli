@@ -59,8 +59,8 @@ the final control. A passing local `npm publish --dry-run` of a staged copy does
 
 ## For the CLI (T10 #1076)
 
-- Reviewed version: the `VERSION` file (bundle it at CLI build time). Write exactly that version into the
-  OpenCode config, never a range.
+- The CLI pins its reviewed CLI-managed release in `forgebench_session_reviewer/_opencode_plugin.py`.
+  The standalone release uses the native OpenCode credential store.
 - Published check (read only): import `checkPublished` from `scripts/check-published.mjs` (do not shell out, and do
   not honour `FORGEBENCH_NPM_REGISTRY`, which exists for this package's tests only), or reproduce its
   contract: one unauthenticated `GET https://registry.npmjs.org/@forgebench%2fopencode/<version>`; HTTP 200 with

@@ -163,22 +163,6 @@ try {
     env, cwd: base, timeout: 60000,
   })
   assert.equal(added.error, null, `plugin add failed: ${added.stderr}`)
-  const connect = await opencode(["api", "GET", "/api/integration", "--standalone"], {
-    env, cwd: base, timeout: 60000,
-  })
-  assert.equal(connect.error, null, `connect catalog failed: ${connect.stderr}`)
-  const integration = JSON.parse(connect.stdout).data.find((entry) => entry.id === "forgebench")
-  assert.ok(integration, "Forgebench absent from /connect after an options-free install")
-  assert.deepEqual(integration.methods.map((method) => method.type), ["oauth", "key"])
-
-  // Override only the endpoint for the mock server. Every feature and the CLI
-  // on PATH still use the defaults; no fallback model list is configured.
-  writeFileSync(configFile, JSON.stringify({ plugins: [{
-    package: pkgDir, options: { url, headers: { "X-Forgebench-Profile": "smoke" } },
-  }] }))
-
-  // Exercise the same native OAuth operation that `auth login --method oauth`
-  // invokes, following its browser redirects against the fixture control plane.
   const reservation = createServer()
   await new Promise((resolve) => reservation.listen(0, "127.0.0.1", resolve))
   const port = reservation.address().port
@@ -186,29 +170,47 @@ try {
   const api = `http://127.0.0.1:${port}`
   const apiHeaders = { Authorization: `Basic ${Buffer.from("opencode:smoke-server-password").toString("base64")}` }
   env.OPENCODE_SERVER_PASSWORD = "smoke-server-password"
-  daemon = execFile("opencode", ["serve", "--print-logs", "--hostname", "127.0.0.1", "--port", String(port)], {
-    env: { ...env, OPENCODE_SERVER_PASSWORD: "smoke-server-password" }, cwd: base,
-  }, () => {})
   let diagnostics = ""
-  let errorDiagnostics = ""
-  daemon.stderr.on("data", (data) => {
-    diagnostics = (diagnostics + data).slice(-3000)
-    errorDiagnostics += String(data).split("\n").filter((line) => /error|defect|cause|exception/i.test(line)).join("\n")
-  })
-  daemon.stdout.on("data", (data) => { diagnostics = (diagnostics + data).slice(-3000) })
-  await until(async () => {
-    if (daemon.exitCode !== null) throw new Error(`OpenCode serve exited ${daemon.exitCode}: ${diagnostics}`)
-    try { await fetch(`${api}/api/integration`, { signal: AbortSignal.timeout(1000) }); return true } catch { return false }
-  }, 20_000, () => diagnostics.replaceAll(KEY, "<REDACTED>").replaceAll(REPORTING_KEY, "<REDACTED>"))
-  const listed = await fetch(`${api}/api/integration`, { headers: apiHeaders })
-  assert.equal(listed.status, 200, `Authenticated API catalog failed (${listed.status})`)
-  assert.ok((await listed.json()).data.some((entry) => entry.id === "forgebench"))
+  const start = async () => {
+    daemon = execFile("opencode", ["serve", "--print-logs", "--hostname", "127.0.0.1", "--port", String(port)], {
+      env, cwd: base,
+    }, () => {})
+    diagnostics = ""
+    daemon.stderr.on("data", data => { diagnostics = (diagnostics + data).slice(-3000) })
+    return until(async () => {
+      if (daemon.exitCode !== null) throw new Error(`OpenCode serve exited ${daemon.exitCode}`)
+      const listed = await fetch(`${api}/api/integration`, {
+        headers: apiHeaders, signal: AbortSignal.timeout(1000),
+      }).catch(() => undefined)
+      if (!listed?.ok) return
+      return (await listed.json()).data.find(entry => entry.id === "forgebench")
+    }, 60_000, () => diagnostics.replaceAll(KEY, "<REDACTED>").replaceAll(REPORTING_KEY, "<REDACTED>"))
+  }
+  const stop = async () => {
+    const stopped = new Promise(resolve => daemon.once("exit", resolve))
+    daemon.kill("SIGTERM")
+    await stopped
+    daemon = undefined
+  }
+
+  // OpenCode may serve its integration registry before its package plugins finish loading.
+  const integration = await start()
+  assert.deepEqual(integration.methods.map(method => method.type), ["oauth", "key"])
+  await stop()
+
+  writeFileSync(configFile, JSON.stringify({ plugins: [{
+    package: `${pkg.name}@${pkg.version}`,
+    options: { url, models: ["previous-install"], executable: tripwire, headers: { "X-Forgebench-Profile": "smoke" } },
+  }] }))
+  await start()
+  const unconnected = await opencode(["models", "--server", api], { env, cwd: base, timeout: 60000 })
+  assert.match(unconnected.stdout, /forgebench\/previous-install/)
   const authorized = await fetch(`${api}/api/integration/forgebench/connect/oauth`, {
     method: "POST", headers: { ...apiHeaders, "Content-Type": "application/json" }, body: JSON.stringify({ methodID: "oauth" }),
   })
   const authorizationBody = await authorized.text()
   if (authorized.status !== 200) await new Promise((resolve) => setTimeout(resolve, 100))
-  assert.equal(authorized.status, 200, `OAuth did not start (${authorized.status}): ${authorizationBody} ${errorDiagnostics || diagnostics}`.replaceAll(KEY, "<REDACTED>").replaceAll(REPORTING_KEY, "<REDACTED>"))
+  assert.equal(authorized.status, 200, `OAuth did not start (${authorized.status}): ${authorizationBody} ${diagnostics}`.replaceAll(KEY, "<REDACTED>").replaceAll(REPORTING_KEY, "<REDACTED>"))
   const attempt = JSON.parse(authorizationBody).data
   const browser = await fetch(attempt.url)
   const page = await browser.text()
@@ -218,9 +220,10 @@ try {
     assert.notEqual(status.status, "failed", status.message)
     return status.status === "complete"
   })
-  const models = await opencode(["models", "--server", api], { env, timeout: 60000 })
+  const models = await opencode(["models", "--server", api], { env, cwd: base, timeout: 60000 })
   assert.match(models.stdout, /forgebench\/smoke-model/, `provider not registered:\n${models.stdout}${models.stderr}`)
 
+  assert.doesNotMatch(models.stdout, /forgebench\/previous-install/)
   const run = await opencode(["run", "--server", api, "--auto", "-m", "forgebench/smoke-model", "say hello"], { env, cwd: base, timeout: 120000 })
   const chat = requests.filter((r) => r.path.endsWith("/chat/completions"))
   assert.ok(chat.length >= 1, `no gateway request (${JSON.stringify(requests)}):\n${run.stdout}${run.stderr}${run.error ?? ""}`)
@@ -249,10 +252,7 @@ try {
   }
   const authCalls = requests.filter((r) => r.path.includes("/auth/cli/")).length
   assert.ok(authCalls >= 3, "sign-in did not run the exchange, options and redeem stages")
-  const stopped = new Promise((resolve) => daemon.once("exit", resolve))
-  daemon.kill("SIGTERM")
-  await stopped
-  daemon = undefined
+  await stop()
   // Informational: `opencode run` exits right after the reply, so on a loaded machine the host can stop
   // before the idle event reaches the plugin. The unit tests cover the event -> spawn path.
   // The tripwire is the proof: nothing ever executed a forgebench binary.

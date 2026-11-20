@@ -2,7 +2,7 @@ import { registerClaudeContext } from "./claude-context.js"
 import { createRequire } from "node:module"
 import type { Plugin } from "@opencode/plugin"
 import { registerGateway } from "./gateway.js"
-import type { GatewayDependencies } from "./gateway.js"
+import type { GatewayDependencies, ModelRefresh } from "./gateway.js"
 import { registerOnboarding } from "./onboarding.js"
 import type { OnboardingDependencies } from "./onboarding.js"
 import { resolveOptions } from "./options.js"
@@ -37,7 +37,7 @@ export async function setup(ctx: Plugin.Context, deps: PluginDependencies = {}):
   const installId = deps.reporting?.installId ?? createInstallId(ctx.storage)
   const conflicts = (what: string) => { void ctx.storage.set(`config-conflict:${what}`, true).catch(() => {}) }
 
-  let refreshModels: (() => Promise<void>) | undefined
+  let refreshModels: ModelRefresh | undefined
   if (gateway) {
     refreshModels = await registerGateway(ctx, gateway, deps, { onConflict: conflicts })
     await registerOnboarding(ctx.integration, gateway, reporting !== undefined, installId, deps.oauth)
@@ -56,17 +56,20 @@ export async function setup(ctx: Plugin.Context, deps: PluginDependencies = {}):
     : undefined
   await report?.registerToolHooks()
   if (!report && !refreshModels) return context ? () => context.dispose() : undefined
+  const models = refreshModels
   const stop = new AbortController()
   const subscription = (async () => {
     for await (const event of ctx.event.subscribe({ signal: stop.signal })) {
       report?.observe(event)
+      if (event.type === "credential.switched" && event.data.integrationID !== PLUGIN_ID) continue
       if (REFRESH_EVENT.test(event.type)) {
-        if (refreshModels) void refreshModels()
+        if (refreshModels) void refreshModels(event.type !== "integration.updated")
         void report?.credentialChanged()
       }
     }
   })().catch(() => {})
   return async () => {
+    models?.dispose()
     await context?.dispose()
     stop.abort()
     await subscription

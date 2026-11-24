@@ -259,3 +259,20 @@ test("review F6: after a 401, an outage never brings back the configured fallbac
   assert.deepEqual(ids(providers), [])
   refresh.dispose()
 })
+
+test("uses the cache wire format only when the gateway advertises it", async () => {
+  const { model } = await import("../dist/v2/options.js")
+  const opus = "vertex-claude-opus-5-5"
+  const gemini = "vertex-gemini-2.5-pro"
+  const [advertised] = toCatalog([{ id: opus, kind: "chat", prompt_cache_format: "anthropic" }])
+  const [legacy, other, invalid] = toCatalog([
+    { id: opus, kind: "chat" },
+    { id: gemini, kind: "chat" },
+    { id: "unknown-format", kind: "chat", prompt_cache_format: "unknown" },
+  ])
+
+  assert.deepEqual(advertised.compatibility, { cacheFormat: "anthropic" })
+  for (const entry of [legacy, other, invalid, model(opus)]) {
+    assert.equal(entry.compatibility, undefined)
+  }
+})

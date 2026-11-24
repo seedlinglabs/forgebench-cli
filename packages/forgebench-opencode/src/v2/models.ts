@@ -17,6 +17,8 @@ export function toModelInfo(entry: CatalogModel): Model.Info {
     id, modelID: id, providerID: PROVIDER_ID, name: entry.name,
     capabilities: { tools: entry.tools, input: entry.vision ? ["text", "image"] : ["text"], output: ["text"] },
     variants: effortVariants(entry.reasoningEfforts),
+    // Only an updated gateway advertises the wire format and scopes it on fallback.
+    ...(entry.promptCacheFormat ? { compatibility: { cacheFormat: entry.promptCacheFormat } } : {}),
     time: { released: 0 },
     // A virtual auto/* model costs whatever it routes to: no price, so OpenCode does not call it "Free".
     cost: !entry.virtual && entry.inputPer1kUsd !== undefined && entry.outputPer1kUsd !== undefined

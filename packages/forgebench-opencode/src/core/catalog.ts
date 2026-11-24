@@ -21,6 +21,7 @@ export type CatalogModel = {
   reasoningEfforts?: string[]
   contextWindow?: number
   maxOutput?: number
+  promptCacheFormat?: "anthropic"
   /** USD per 1k tokens, as the gateway reports them. */
   inputPer1kUsd?: number
   outputPer1kUsd?: number
@@ -83,6 +84,7 @@ export function parseCatalogEntry(value: unknown): CatalogModel | undefined {
     reasoningEfforts: effortLevels(entry.reasoning_efforts),
     contextWindow: positive(entry.context_window),
     maxOutput: positive(entry.max_output_tokens),
+    promptCacheFormat: entry.prompt_cache_format === "anthropic" ? "anthropic" : undefined,
     inputPer1kUsd: nonNegative(entry.input_per_1k_usd),
     outputPer1kUsd: nonNegative(entry.output_per_1k_usd),
   }

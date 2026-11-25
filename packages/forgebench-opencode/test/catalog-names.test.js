@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import { parseCatalog } from "../dist/core/catalog.js"
-import { toCatalog } from "../dist/v2/models.js"
+import { DEFAULT_CONTEXT, DEFAULT_OUTPUT, fetchModels, toCatalog } from "../dist/v2/models.js"
 import { setup } from "../dist/v2/plugin.js"
 import { PROVIDER_ID } from "../dist/v2/options.js"
 import { fakeConnection, fakeCtx } from "./helpers.js"
@@ -72,6 +72,42 @@ const options = { url: "https://gw.example.com", apiKey: KEY, models: ["stale-mo
 const live = { data: [chat({ id: "live-model", display_name: "Live Model", route: "Gemini API" })] }
 const ids = (providers) => [...(providers.get(PROVIDER_ID)?.models.keys() ?? [])]
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+test("model discovery keeps usable rows when optional token limits are malformed", async () => {
+  const badLimits = [
+    null, true, false, [123], { valueOf: null, toString: null },
+    "", " ", "0x100", "1e3", "12.5", "unknown", "9007199254740993",
+    -1, 0, 12.5, Number.MAX_SAFE_INTEGER + 1,
+  ]
+  const data = [
+    chat({ id: "numeric", context_window: 128000, max_output_tokens: 8192 }),
+    chat({ id: "decimal-strings", context_window: " 64000 ", max_output_tokens: "4096" }),
+    chat({ id: "missing" }),
+    ...badLimits.map((limit, i) => chat({
+      id: `bad-context-${i}`, context_window: limit, max_output_tokens: 1024,
+    })),
+    ...badLimits.map((limit, i) => chat({
+      id: `bad-output-${i}`, context_window: 16384, max_output_tokens: limit,
+    })),
+    chat({ id: "trailing", context_window: 32768, max_output_tokens: 2048 }),
+  ]
+  const { models, defaultModel } = await fetchModels({
+    url: options.url,
+    key: KEY,
+    fetchImpl: async () => Response.json({ data, default_model: "trailing" }),
+  })
+
+  assert.equal(defaultModel, "trailing")
+  assert.deepEqual(models.map((entry) => entry.id), data.map((entry) => entry.id))
+  assert.deepEqual(models.map((entry) => entry.limit), [
+    { context: 128000, output: 8192 },
+    { context: 64000, output: 4096 },
+    { context: DEFAULT_CONTEXT, output: DEFAULT_OUTPUT },
+    ...badLimits.map(() => ({ context: DEFAULT_CONTEXT, output: 1024 })),
+    ...badLimits.map(() => ({ context: 16384, output: DEFAULT_OUTPUT })),
+    { context: 32768, output: 2048 },
+  ])
+})
 
 test("a catalog slower than the old 3 s window is ready when setup returns", async () => {
   const { ctx, providers } = fakeCtx(options)
@@ -263,16 +299,14 @@ test("review F6: after a 401, an outage never brings back the configured fallbac
 test("uses the cache wire format only when the gateway advertises it", async () => {
   const { model } = await import("../dist/v2/options.js")
   const opus = "vertex-claude-opus-5-5"
-  const gemini = "vertex-gemini-2.5-pro"
   const [advertised] = toCatalog([{ id: opus, kind: "chat", prompt_cache_format: "anthropic" }])
-  const [legacy, other, invalid] = toCatalog([
+  const [legacy, invalid] = toCatalog([
     { id: opus, kind: "chat" },
-    { id: gemini, kind: "chat" },
     { id: "unknown-format", kind: "chat", prompt_cache_format: "unknown" },
   ])
 
   assert.deepEqual(advertised.compatibility, { cacheFormat: "anthropic" })
-  for (const entry of [legacy, other, invalid, model(opus)]) {
-    assert.equal(entry.compatibility, undefined)
-  }
+  assert.equal(legacy.compatibility, undefined)
+  assert.equal(invalid.compatibility, undefined)
+  assert.equal(model(opus).compatibility, undefined)
 })

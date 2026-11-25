@@ -31,9 +31,13 @@ export const EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh
 export const effortLevels = (value: unknown): string[] =>
   Array.isArray(value) ? [...new Set(value.filter((v): v is string => typeof v === "string" && EFFORT_LEVELS.includes(v)))] : []
 
-const positive = (value: unknown): number | undefined => {
-  const n = Number(value)
-  return Number.isFinite(n) && n > 0 ? n : undefined
+const tokenLimit = (value: unknown): number | undefined => {
+  // Preserve decimal strings accepted by earlier plugin versions.
+  if (typeof value === "string") {
+    const decimal = value.trim()
+    value = /^\d+$/.test(decimal) ? Number(decimal) : undefined
+  }
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined
 }
 const nonNegative = (value: unknown): number | undefined =>
   typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined
@@ -82,8 +86,8 @@ export function parseCatalogEntry(value: unknown): CatalogModel | undefined {
     tools: entry.tool_call !== false,
     vision: entry.vision === true,
     reasoningEfforts: effortLevels(entry.reasoning_efforts),
-    contextWindow: positive(entry.context_window),
-    maxOutput: positive(entry.max_output_tokens),
+    contextWindow: tokenLimit(entry.context_window),
+    maxOutput: tokenLimit(entry.max_output_tokens),
     promptCacheFormat: entry.prompt_cache_format === "anthropic" ? "anthropic" : undefined,
     inputPer1kUsd: nonNegative(entry.input_per_1k_usd),
     outputPer1kUsd: nonNegative(entry.output_per_1k_usd),
